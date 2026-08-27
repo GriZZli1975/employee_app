@@ -84,6 +84,36 @@ class BotApi {
     return _decode(res);
   }
 
+  Future<Map<String, dynamic>> completeInspection({
+    required String sessionId,
+    required String kind,
+    required StooxWorkOrder order,
+    int? employeeId,
+    String? employeeName,
+  }) async {
+    final body = <String, dynamic>{
+      'session_id': sessionId,
+      'kind': kind,
+      'employee_id': ?employeeId,
+      if (employeeName != null && employeeName.isNotEmpty) 'employee_name': employeeName,
+      if (order.clientId != null) 'client_id': order.clientId,
+      if (order.carId != null) 'car_id': order.carId,
+      if (order.saleId != null) 'sale_id': order.saleId,
+      if (order.regNumber != null) 'plate': order.regNumber,
+      if (order.vin != null) 'vin': order.vin,
+      if (order.client != null) 'client_name': order.client,
+      if (order.carInfo.isNotEmpty) 'car_info': order.carInfo,
+    };
+    final res = await http
+        .post(
+          Uri.parse('${await _base()}/api/inspection/complete'),
+          headers: await _headers(),
+          body: jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 180));
+    return _decode(res);
+  }
+
   Future<Map<String, dynamic>> chat({
     required String message,
     required int employeeId,
