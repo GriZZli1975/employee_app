@@ -42,28 +42,46 @@ class EmployeeSession {
   }
 
   static String normalizeBaseUrl(String url) {
-    var u = url.trim();
+    var u = _stripToHostPath(url);
     if (u.isEmpty) return '';
-    if (!u.startsWith('http://') && !u.startsWith('https://')) {
-      u = 'https://$u';
-    }
-    u = u.replaceAll(RegExp(r'/+$'), '');
     for (final suffix in ['/outer/api/v1', '/outer/api', '/api/v1', '/api']) {
       if (u.toLowerCase().endsWith(suffix)) {
         u = u.substring(0, u.length - suffix.length);
         break;
       }
     }
-    return u.replaceAll(RegExp(r'/+$'), '');
+    return 'https://${u.replaceAll(RegExp(r'/+$'), '')}';
   }
 
   static String normalizeBotUrl(String url) {
-    var u = url.trim();
+    final u = _stripToHostPath(url);
     if (u.isEmpty) return '';
-    if (!u.startsWith('http://') && !u.startsWith('https://')) {
-      u = 'https://$u';
+    return 'https://${u.replaceAll(RegExp(r'/+$'), '')}';
+  }
+
+  /// Убирает повторные/сломанные `http://`, `https://`, `http//` и пробелы.
+  static String _stripToHostPath(String url) {
+    var u = url.trim().replaceAll(RegExp(r'\s+'), '');
+    if (u.isEmpty) return '';
+    while (true) {
+      final lower = u.toLowerCase();
+      if (lower.startsWith('https://')) {
+        u = u.substring(8);
+      } else if (lower.startsWith('http://')) {
+        u = u.substring(7);
+      } else if (lower.startsWith('https:/')) {
+        u = u.substring(7);
+      } else if (lower.startsWith('http:/')) {
+        u = u.substring(6);
+      } else if (lower.startsWith('https//')) {
+        u = u.substring(7);
+      } else if (lower.startsWith('http//')) {
+        u = u.substring(6);
+      } else {
+        break;
+      }
     }
-    return u.replaceAll(RegExp(r'/+$'), '');
+    return u.replaceFirst(RegExp(r'^/+'), '');
   }
 
   Future<void> savePcKey(String key) async {
@@ -125,7 +143,10 @@ class EmployeeSession {
   }
 
   Future<String> getBotUrl() async {
-    if (_botUrl != null && _botUrl!.isNotEmpty) return _botUrl!;
+    if (_botUrl != null && _botUrl!.isNotEmpty) {
+      _botUrl = normalizeBotUrl(_botUrl!);
+      return _botUrl!;
+    }
     try {
       final saved = await _storage.read(key: _botUrlKey).timeout(_timeout);
       if (saved != null && saved.isNotEmpty) {

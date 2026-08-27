@@ -219,7 +219,8 @@ class _LoginScreenState extends State<LoginScreen> {
                 controller: _botUrlCtrl,
                 decoration: const InputDecoration(
                   labelText: 'URL сервиса бота',
-                  hintText: 'https://xxx.up.railway.app',
+                  hintText: 'https://web-production-xxxx.up.railway.app',
+                  helperText: 'Полный адрес Railway, один раз https://',
                   border: OutlineInputBorder(),
                 ),
                 keyboardType: TextInputType.url,

@@ -35,7 +35,7 @@ class BotApi {
   }
 
   Future<String> _base() async {
-    final url = await session.getBotUrl();
+    final url = EmployeeSession.normalizeBotUrl(await session.getBotUrl());
     if (url.isEmpty) {
       throw BotApiException(0, 'Не задан URL сервиса бота');
     }

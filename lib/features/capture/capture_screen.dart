@@ -97,14 +97,21 @@ class _CaptureScreenState extends State<CaptureScreen> {
     } on BotApiException catch (e) {
       if (mounted) setState(() => _error = e.toString());
     } catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted) {
+        setState(() => _error = 'Не удалось отправить файл. Проверьте HTTPS URL бота и сеть.\n$e');
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
   }
 
   Future<void> _pickImage(ImageSource source) async {
-    final file = await _picker.pickImage(source: source, imageQuality: 85);
+    final file = await _picker.pickImage(
+      source: source,
+      imageQuality: 70,
+      maxWidth: 1920,
+      maxHeight: 1920,
+    );
     if (file == null) return;
     await _upload(
       file: File(file.path),
