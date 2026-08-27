@@ -1,0 +1,186 @@
+import 'package:flutter/material.dart';
+
+import '../../core/session.dart';
+import '../../core/stoox_api.dart';
+import '../../core/work_order.dart';
+import '../ai/ai_chat_screen.dart';
+import '../capture/capture_screen.dart';
+import '../works/work_order_screen.dart';
+
+Future<void> showCarActions({
+  required BuildContext context,
+  required EmployeeSession session,
+  required StooxWorkOrder order,
+  required StooxApi stocks,
+  Map<String, dynamic>? employeeSummary,
+}) {
+  return showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    isScrollControlled: true,
+    builder: (ctx) {
+      final bottom = MediaQuery.paddingOf(ctx).bottom;
+      return Padding(
+        padding: EdgeInsets.fromLTRB(20, 8, 20, 16 + bottom),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              order.regNumber ?? order.saleNumber,
+              style: Theme.of(ctx).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            if (order.carInfo.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Text(order.carInfo, style: const TextStyle(color: Colors.black54)),
+              ),
+            if (order.saleNumber.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Text(
+                  'ЗН ${order.saleNumber}',
+                  style: const TextStyle(color: Colors.black45, fontSize: 13),
+                ),
+              ),
+            const SizedBox(height: 20),
+            FilledButton.icon(
+              onPressed: () async {
+                Navigator.pop(ctx);
+                var resolved = order;
+                if (resolved.works.isEmpty) {
+                  final messenger = ScaffoldMessenger.of(context);
+                  messenger.showSnackBar(
+                    const SnackBar(content: Text('Загружаем работы из ЗН…')),
+                  );
+                  try {
+                    resolved = await _resolveWorkOrder(
+                      order: resolved,
+                      client: stocks,
+                      employeeSummary: employeeSummary,
+                    );
+                  } catch (_) {
+                    messenger.showSnackBar(
+                      const SnackBar(content: Text('Не удалось загрузить работы из Stoox')),
+                    );
+                  }
+                }
+                if (!context.mounted) return;
+                await Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => WorkOrderScreen(order: resolved),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.list_alt),
+              label: Text(
+                order.works.isEmpty ? 'Список работ' : 'Список работ (${order.works.length})',
+              ),
+            ),
+            const SizedBox(height: 10),
+            FilledButton.tonalIcon(
+              onPressed: () {
+                if (!_hasPlate(order, context)) return;
+                Navigator.pop(ctx);
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => CaptureScreen(
+                      session: session,
+                      order: order,
+                      kind: 'inspection',
+                      title: 'Осмотр',
+                      employeeId: _employeeId(employeeSummary),
+                      employeeName: employeeSummary == null
+                          ? null
+                          : StooxWorkOrder.employeeNameFromSummary(employeeSummary),
+                    ),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.photo_camera_outlined),
+              label: const Text('Осмотр'),
+            ),
+            const SizedBox(height: 10),
+            FilledButton.tonalIcon(
+              onPressed: () {
+                if (!_hasPlate(order, context)) return;
+                Navigator.pop(ctx);
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => CaptureScreen(
+                      session: session,
+                      order: order,
+                      kind: 'diagnostics',
+                      title: 'Диагностика',
+                      employeeId: _employeeId(employeeSummary),
+                      employeeName: employeeSummary == null
+                          ? null
+                          : StooxWorkOrder.employeeNameFromSummary(employeeSummary),
+                    ),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.build_circle_outlined),
+              label: const Text('Диагностика'),
+            ),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: () {
+                Navigator.pop(ctx);
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => AiChatScreen(
+                      session: session,
+                      order: order,
+                      employeeId: _employeeId(employeeSummary),
+                      employeeName: employeeSummary == null
+                          ? null
+                          : StooxWorkOrder.employeeNameFromSummary(employeeSummary),
+                    ),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.smart_toy_outlined),
+              label: const Text('ИИ-чат'),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      );
+    },
+  );
+}
+
+bool _hasPlate(StooxWorkOrder order, BuildContext context) {
+  final plate = order.regNumber?.trim() ?? '';
+  if (plate.length >= 5) return true;
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(content: Text('У авто нет госномера')),
+  );
+  return false;
+}
+
+int? _employeeId(Map<String, dynamic>? summary) {
+  if (summary == null) return null;
+  final raw = StooxWorkOrder.employeeIdFromSummary(summary);
+  return raw == null ? null : int.tryParse(raw);
+}
+
+Future<StooxWorkOrder> _resolveWorkOrder({
+  required StooxWorkOrder order,
+  required StooxApi client,
+  Map<String, dynamic>? employeeSummary,
+}) async {
+  final dash = await client.fetchEmployeeDashboard();
+  final summary = employeeSummary ?? dash.summary;
+  final enriched = await client.enrichBasketItems(
+    [order.raw],
+    sales: dash.sales,
+    warranty: dash.warranty,
+    employeeSummary: summary,
+  );
+  if (enriched.isNotEmpty && enriched.first is Map) {
+    return StooxWorkOrder(Map<String, dynamic>.from(enriched.first as Map));
+  }
+  return order;
+}
