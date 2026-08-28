@@ -35,8 +35,13 @@ class WorkOrderScreen extends StatelessWidget {
                     const SizedBox(height: 4),
                     Text('${o.mark ?? ''} ${o.model ?? ''}'.trim()),
                   ],
-                  if (o.client != null)
-                    Text('Клиент: ${o.client}', style: const TextStyle(color: Colors.black54)),
+                  if (o.clientBalance != null || o.clientBalanceJur != null) ...[
+                    const SizedBox(height: 8),
+                    if (o.clientBalance != null)
+                      Text('Баланс: ${StooxFormat.money(o.clientBalance!)}'),
+                    if (o.clientBalanceJur != null)
+                      Text('Баланс (юр.): ${StooxFormat.money(o.clientBalanceJur!)}'),
+                  ],
                   if (o.employee != null)
                     Text('Исполнитель: ${o.employee}', style: const TextStyle(color: Colors.black54)),
                   if (o.createdAt != null)

@@ -18,6 +18,8 @@ class InWorkScreenState extends State<InWorkScreen> {
   bool _loading = false;
   String? _error;
   List<dynamic> _items = [];
+  List<dynamic> _sales = [];
+  List<dynamic> _warranty = [];
   Map<String, dynamic>? _employeeSummary;
 
   @override
@@ -43,6 +45,8 @@ class InWorkScreenState extends State<InWorkScreen> {
       if (mounted) {
         setState(() {
           _items = items;
+          _sales = dash.sales;
+          _warranty = dash.warranty;
           _employeeSummary = dash.summary;
         });
       }
@@ -138,6 +142,8 @@ class InWorkScreenState extends State<InWorkScreen> {
                     order: order,
                     stocks: StooxApi(widget.session),
                     employeeSummary: _employeeSummary,
+                    sales: _sales,
+                    warranty: _warranty,
                   ),
                 ),
               );

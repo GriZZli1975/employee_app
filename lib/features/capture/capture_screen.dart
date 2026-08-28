@@ -296,8 +296,6 @@ class _CaptureScreenState extends State<CaptureScreen> {
         ),
         if (order.carInfo.isNotEmpty)
           Text(order.carInfo, style: const TextStyle(color: Colors.black54)),
-        if (order.client != null && order.client!.isNotEmpty)
-          Text(order.client!, style: const TextStyle(color: Colors.black54)),
         const SizedBox(height: 8),
         const Text(
           'Снимите фото, видео и надиктуйте, что нужно сделать. '

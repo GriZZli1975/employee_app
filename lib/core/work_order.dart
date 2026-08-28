@@ -30,6 +30,20 @@ class StooxWorkOrder {
     return num.tryParse(v?.toString() ?? '');
   }
 
+  num? get clientBalance => _num(raw['client_balance']);
+  num? get clientBalanceJur => _num(raw['client_balance_jur']);
+
+  static const _scalarMergeKeys = [
+    'client_balance',
+    'client_balance_jur',
+    'client_id',
+    'car_id',
+    'sale_id',
+    'reg_number',
+    'mark_name',
+    'model_name',
+  ];
+
   static const _worksKeys = ['works', 'work_list', 'work_items', 'services', 'uslugi', 'work'];
   static const _partsKeys = ['parts', 'spare_parts', 'zch', 'details'];
   static const _cleaningKeys = ['cleaning', 'cleaning_works'];
@@ -82,6 +96,11 @@ class StooxWorkOrder {
       if (match == null) continue;
       for (final key in _mergeKeys) {
         if (_isEmptyLines(merged[key]) && !_isEmptyLines(match[key])) {
+          merged[key] = match[key];
+        }
+      }
+      for (final key in _scalarMergeKeys) {
+        if ((merged[key] == null || merged[key].toString().isEmpty) && match[key] != null) {
           merged[key] = match[key];
         }
       }
@@ -159,6 +178,12 @@ class StooxWorkOrder {
     if (value is int) return value > 0 ? value : null;
     final n = int.tryParse(value.toString());
     return n != null && n > 0 ? n : null;
+  }
+
+  static num? _num(dynamic value) {
+    if (value == null) return null;
+    if (value is num) return value;
+    return num.tryParse(value.toString().replaceAll(' ', '').replaceAll(',', '.'));
   }
 }
 
