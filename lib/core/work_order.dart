@@ -246,9 +246,80 @@ class StooxMcpDashboard {
   Map<String, dynamic> get summary =>
       Map<String, dynamic>.from(raw['summary'] as Map? ?? {});
 
+  Map<String, dynamic>? get balance {
+    final v = raw['balance'];
+    if (v is Map) return Map<String, dynamic>.from(v);
+    return null;
+  }
+
   List<dynamic> get baskets => StooxApiLists.extract(raw['baskets']);
   List<dynamic> get sales => StooxApiLists.extract(raw['sales']);
   List<dynamic> get warranty => StooxApiLists.extract(raw['warranty']);
+}
+
+class StooxBalanceInfo {
+  StooxBalanceInfo(this.raw);
+
+  final Map<String, dynamic> raw;
+
+  String? get fullName {
+    final parts = [
+      raw['last_name'],
+      raw['first_name'],
+      raw['middle_name'],
+    ].where((v) => v != null && v.toString().isNotEmpty).map((e) => e.toString());
+    final name = parts.join(' ').trim();
+    return name.isEmpty ? null : name;
+  }
+
+  String? get position => raw['position_name']?.toString();
+
+  num? _num(String key) {
+    final v = raw[key];
+    if (v is num) return v;
+    return num.tryParse(v?.toString() ?? '');
+  }
+
+  bool _show(String key) {
+    final v = raw[key];
+    if (v is bool) return v;
+    if (v is num) return v != 0;
+    return v?.toString() == '1' || v == true;
+  }
+
+  num? get balance => _num('balance');
+  num? get lastMonthSalary =>
+      _show('show_last_month_salary') ? _num('last_month_salary') : null;
+  num? get thisMonthSalary =>
+      _show('show_this_month_salary') ? _num('this_month_salary') : null;
+  num? get lastMonthNh => _show('show_last_month_nh') ? _num('last_month_nh') : null;
+  num? get thisMonthNh => _show('show_this_month_nh') ? _num('this_month_nh') : null;
+
+  List<StooxBalanceRow> get rows {
+    final out = <StooxBalanceRow>[];
+    if (balance != null) {
+      out.add(StooxBalanceRow('Текущий баланс', balance!));
+    }
+    if (lastMonthSalary != null) {
+      out.add(StooxBalanceRow('Начислено за прошлый месяц', lastMonthSalary!));
+    }
+    if (thisMonthSalary != null && thisMonthSalary != 0) {
+      out.add(StooxBalanceRow('Начислено за текущий месяц', thisMonthSalary!));
+    }
+    if (lastMonthNh != null && lastMonthNh != 0) {
+      out.add(StooxBalanceRow('Н/Ч за прошлый месяц', lastMonthNh!));
+    }
+    if (thisMonthNh != null && thisMonthNh != 0) {
+      out.add(StooxBalanceRow('Н/Ч за текущий месяц', thisMonthNh!));
+    }
+    return out;
+  }
+}
+
+class StooxBalanceRow {
+  const StooxBalanceRow(this.label, this.amount);
+  final String label;
+  final num amount;
 }
 
 class StooxApiLists {

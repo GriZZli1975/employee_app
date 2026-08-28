@@ -1,7 +1,7 @@
 name: stoox_employee_app
 description: Приложение сотрудников Stoox — в работе, осмотр, диагностика, ИИ.
 publish_to: "none"
-version: 1.0.4+5
+version: 1.0.5+6
 
 environment:
   sdk: ^3.12.2

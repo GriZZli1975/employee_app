@@ -120,12 +120,14 @@ class BotApi {
     String? employeeName,
     String? conversationId,
     Map<String, dynamic>? context,
+    String? searchMode,
   }) async {
     final body = <String, dynamic>{
       'employee_id': employeeId,
       'message': message,
       if (employeeName != null && employeeName.isNotEmpty) 'employee_name': employeeName,
       if (conversationId != null && conversationId.isNotEmpty) 'conversation_id': conversationId,
+      if (searchMode != null && searchMode.isNotEmpty) 'search_mode': searchMode,
       'context': ?context,
     };
     final res = await http

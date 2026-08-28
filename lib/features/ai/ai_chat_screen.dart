@@ -6,6 +6,9 @@ import '../../core/work_order.dart';
 import 'ai_chat_models.dart';
 import 'ai_message_bubble.dart';
 
+/// Режим поиска ИИ: auto — как раньше; car — по авто; history — медиатека; web — интернет.
+enum AiSearchMode { auto, car, history, web }
+
 class AiChatScreen extends StatefulWidget {
   const AiChatScreen({
     super.key,
@@ -32,13 +35,25 @@ class _AiChatScreenState extends State<AiChatScreen> {
   String? _conversationId;
   bool _loading = false;
   String? _error;
+  AiSearchMode _searchMode = AiSearchMode.web;
 
-  static const _templates = [
-    'Фото диагностики за сегодня',
-    'Результаты осмотра за последний визит',
+  static const _templatesGeneral = [
     'Как провести диагностику подвески — покажи схему',
     'Момент затяжки колёс для этой модели',
+    'Как правильно менять передние тормозные колодки — видео',
   ];
+
+  static const _templatesCar = [
+    'Фото диагностики за сегодня',
+    'Результаты осмотра за последний визит',
+    'Список работ по текущему ЗН',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _searchMode = widget.order != null ? AiSearchMode.car : AiSearchMode.web;
+  }
 
   @override
   void dispose() {
@@ -93,6 +108,7 @@ class _AiChatScreenState extends State<AiChatScreen> {
         employeeName: widget.employeeName,
         conversationId: _conversationId,
         context: _context(),
+        searchMode: _searchMode.name,
       );
       _conversationId = res['conversation_id']?.toString() ?? _conversationId;
       final reply = res['reply'];
@@ -151,6 +167,11 @@ class _AiChatScreenState extends State<AiChatScreen> {
                 subtitle: Text(order.carInfo),
               ),
             ),
+          _SearchModeBar(
+            hasCar: order != null,
+            mode: _searchMode,
+            onChanged: (mode) => setState(() => _searchMode = mode),
+          ),
           if (_error != null)
             Material(
               color: theme.colorScheme.errorContainer,
@@ -184,7 +205,7 @@ class _AiChatScreenState extends State<AiChatScreen> {
               child: Wrap(
                 spacing: 6,
                 runSpacing: 6,
-                children: _templates
+                children: (order != null ? _templatesCar : _templatesGeneral)
                     .map(
                       (t) => ActionChip(
                         label: Text(t, style: const TextStyle(fontSize: 12)),
@@ -268,7 +289,7 @@ class _Header extends StatelessWidget {
               ),
               Text(
                 hasCar
-                    ? 'Медиатека клиента + поиск в интернете'
+                    ? 'Выберите режим: авто, история осмотров или веб'
                     : 'Справочник и поиск по ремонту',
                 style: theme.textTheme.bodySmall?.copyWith(color: Colors.black54),
               ),
@@ -301,15 +322,70 @@ class _EmptyHints extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               hasCar
-                  ? '«Фото диагностики» — файлы из осмотра в S3. '
-                      '«Покажи схему» / «видео» — поиск в интернете. '
-                      'Ссылки и картинки откроются по нажатию.'
-                  : 'Спросите про ремонт, диагностику, запчасти. '
-                      'Можно выбрать подсказку ниже.',
+                  ? '«Авто» — данные по машине и ЗН. '
+                      '«История» — фото/видео осмотров и диагностик. '
+                      '«Веб» — видео, схемы и статьи из интернета.'
+                  : 'Режим «Веб» — поиск видео, схем и статей. '
+                      '«История» доступна при открытии чата из карточки авто.',
               style: const TextStyle(height: 1.4),
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _SearchModeBar extends StatelessWidget {
+  const _SearchModeBar({
+    required this.hasCar,
+    required this.mode,
+    required this.onChanged,
+  });
+
+  final bool hasCar;
+  final AiSearchMode mode;
+  final ValueChanged<AiSearchMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!hasCar) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: Chip(
+            avatar: const Icon(Icons.language, size: 16),
+            label: const Text('Поиск в интернете'),
+          ),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+      child: SegmentedButton<AiSearchMode>(
+        segments: [
+          if (hasCar)
+            const ButtonSegment(
+              value: AiSearchMode.car,
+              label: Text('Авто', style: TextStyle(fontSize: 12)),
+              icon: Icon(Icons.directions_car_outlined, size: 16),
+            ),
+          ButtonSegment(
+            value: AiSearchMode.history,
+            label: const Text('История', style: TextStyle(fontSize: 12)),
+            icon: const Icon(Icons.photo_library_outlined, size: 16),
+            enabled: hasCar,
+          ),
+          const ButtonSegment(
+            value: AiSearchMode.web,
+            label: Text('Веб', style: TextStyle(fontSize: 12)),
+            icon: Icon(Icons.language, size: 16),
+          ),
+        ],
+        selected: {mode == AiSearchMode.auto ? AiSearchMode.car : mode},
+        onSelectionChanged: (s) => onChanged(s.first),
       ),
     );
   }

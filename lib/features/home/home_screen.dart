@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../../core/session.dart';
 import '../../core/work_order.dart';
-import '../ai/ai_chat_screen.dart';
+import '../../widgets/main_nav_bar.dart';
 import '../in_work/in_work_screen.dart';
+import '../personal/personal_screen.dart';
+import '../works/zn_tab_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
@@ -20,9 +22,13 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
+  int _tabIndex = MainNavBar.inWorkTabIndex;
   String _name = 'Сотрудник';
   int? _employeeId;
+
   final _inWorkKey = GlobalKey<InWorkScreenState>();
+  final _znKey = GlobalKey<ZnTabScreenState>();
+  final _personalKey = GlobalKey<PersonalScreenState>();
 
   @override
   void initState() {
@@ -40,53 +46,39 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  Future<void> _logout() async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Выйти?'),
-        content: const Text('PC-ключ останется только в Stoox, из приложения будет удалён.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Отмена')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Выйти')),
-        ],
-      ),
-    );
-    if (ok == true) {
-      await widget.session.disconnect();
-      widget.onLogout();
+  void _onTabSelected(int index) {
+    setState(() => _tabIndex = index);
+    if (index == MainNavBar.inWorkTabIndex) {
+      _inWorkKey.currentState?.reload();
+    } else if (index == 0) {
+      _znKey.currentState?.reload();
+    } else if (index == 2) {
+      _personalKey.currentState?.reload();
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text(_name),
-        actions: [
-          IconButton(
-            tooltip: 'ИИ без авто',
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder: (_) => AiChatScreen(
-                    session: widget.session,
-                    employeeId: _employeeId,
-                    employeeName: _name,
-                  ),
-                ),
-              );
-            },
-            icon: const Icon(Icons.smart_toy_outlined),
-          ),
-          IconButton(
-            tooltip: 'Выйти',
-            onPressed: _logout,
-            icon: const Icon(Icons.logout),
+      appBar: AppBar(title: Text(_name)),
+      body: IndexedStack(
+        index: _tabIndex,
+        children: [
+          ZnTabScreen(key: _znKey, session: widget.session),
+          InWorkScreen(key: _inWorkKey, session: widget.session),
+          PersonalScreen(
+            key: _personalKey,
+            session: widget.session,
+            employeeName: _name,
+            employeeId: _employeeId,
+            onLogout: widget.onLogout,
           ),
         ],
       ),
-      body: InWorkScreen(key: _inWorkKey, session: widget.session),
+      bottomNavigationBar: MainNavBar(
+        selectedIndex: _tabIndex,
+        onSelected: _onTabSelected,
+      ),
     );
   }
 }

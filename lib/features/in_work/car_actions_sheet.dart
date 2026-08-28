@@ -5,7 +5,6 @@ import '../../core/stoox_api.dart';
 import '../../core/work_order.dart';
 import '../ai/ai_chat_screen.dart';
 import '../capture/capture_screen.dart';
-import '../works/period_orders_screen.dart';
 import '../works/work_order_screen.dart';
 
 Future<void> showCarActions({
@@ -17,9 +16,6 @@ Future<void> showCarActions({
   List<dynamic> sales = const [],
   List<dynamic> warranty = const [],
 }) {
-  final salesOrders = PeriodOrdersScreen.filterForOrder(sales, order);
-  final warrantyOrders = PeriodOrdersScreen.filterForOrder(warranty, order);
-
   return showModalBottomSheet<void>(
     context: context,
     showDragHandle: true,
@@ -49,32 +45,6 @@ Future<void> showCarActions({
                   style: const TextStyle(color: Colors.black45, fontSize: 13),
                 ),
               ),
-            if (order.clientBalance != null || order.clientBalanceJur != null) ...[
-              const SizedBox(height: 12),
-              Card(
-                margin: EdgeInsets.zero,
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Баланс клиента', style: Theme.of(ctx).textTheme.titleSmall),
-                      const SizedBox(height: 4),
-                      if (order.clientBalance != null)
-                        Text(
-                          'Физ. лицо: ${StooxFormat.money(order.clientBalance!)}',
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                      if (order.clientBalanceJur != null)
-                        Text(
-                          'Юр. лицо: ${StooxFormat.money(order.clientBalanceJur!)}',
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
             const SizedBox(height: 16),
             FilledButton.icon(
               onPressed: () async {
@@ -110,40 +80,6 @@ Future<void> showCarActions({
               label: Text(
                 order.works.isEmpty ? 'Список работ' : 'Список работ (${order.works.length})',
               ),
-            ),
-            const SizedBox(height: 10),
-            OutlinedButton.icon(
-              onPressed: () {
-                Navigator.pop(ctx);
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => PeriodOrdersScreen(
-                      title: 'ЗН за период',
-                      orders: salesOrders,
-                      emptyText: 'Нет заказ-нарядов за период по этому клиенту',
-                    ),
-                  ),
-                );
-              },
-              icon: const Icon(Icons.receipt_long_outlined),
-              label: Text('ЗН за период (${salesOrders.length})'),
-            ),
-            const SizedBox(height: 10),
-            OutlinedButton.icon(
-              onPressed: () {
-                Navigator.pop(ctx);
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => PeriodOrdersScreen(
-                      title: 'Гарантийные ЗН',
-                      orders: warrantyOrders,
-                      emptyText: 'Нет гарантийных ЗН за период по этому клиенту',
-                    ),
-                  ),
-                );
-              },
-              icon: const Icon(Icons.verified_outlined),
-              label: Text('Гарантийные ЗН (${warrantyOrders.length})'),
             ),
             const SizedBox(height: 10),
             FilledButton.tonalIcon(
