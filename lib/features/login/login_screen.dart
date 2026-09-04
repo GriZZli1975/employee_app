@@ -10,10 +10,14 @@ class LoginScreen extends StatefulWidget {
     super.key,
     required this.session,
     required this.onConnected,
+    required this.dark,
+    required this.onToggleTheme,
   });
 
   final EmployeeSession session;
   final VoidCallback onConnected;
+  final bool dark;
+  final VoidCallback onToggleTheme;
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -150,6 +154,17 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        actions: [
+          IconButton(
+            tooltip: widget.dark ? 'Светлая тема' : 'Тёмная тема',
+            onPressed: widget.onToggleTheme,
+            icon: Icon(widget.dark ? Icons.light_mode_outlined : Icons.dark_mode_outlined),
+          ),
+        ],
+      ),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.fromLTRB(24, 32, 24, 24),
@@ -162,10 +177,10 @@ class _LoginScreenState extends State<LoginScreen> {
               style: Theme.of(context).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
-            const Text(
+            Text(
               'Вход только через Stoox: хост, ключ компании и PC-ключ.',
               textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.black54, height: 1.35),
+              style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, height: 1.35),
             ),
             const SizedBox(height: 28),
             TextField(

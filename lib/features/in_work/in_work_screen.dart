@@ -6,9 +6,14 @@ import '../../core/work_order.dart';
 import 'car_actions_sheet.dart';
 
 class InWorkScreen extends StatefulWidget {
-  const InWorkScreen({super.key, required this.session});
+  const InWorkScreen({
+    super.key,
+    required this.session,
+    this.onCountChanged,
+  });
 
   final EmployeeSession session;
+  final ValueChanged<int>? onCountChanged;
 
   @override
   State<InWorkScreen> createState() => InWorkScreenState();
@@ -49,6 +54,7 @@ class InWorkScreenState extends State<InWorkScreen> {
           _warranty = dash.warranty;
           _employeeSummary = dash.summary;
         });
+        widget.onCountChanged?.call(items.length);
       }
     } on StooxApiException catch (e) {
       if (mounted) setState(() => _error = e.toString());

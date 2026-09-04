@@ -72,7 +72,11 @@ Future<void> showCarActions({
                 if (!context.mounted) return;
                 await Navigator.of(context).push(
                   MaterialPageRoute<void>(
-                    builder: (_) => WorkOrderScreen(order: resolved),
+                    builder: (_) => WorkOrderScreen(
+                      order: resolved,
+                      session: session,
+                      allowMarkDone: true,
+                    ),
                   ),
                 );
               },

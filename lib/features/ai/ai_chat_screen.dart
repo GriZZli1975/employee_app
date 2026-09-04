@@ -116,7 +116,7 @@ class _AiChatScreenState extends State<AiChatScreen> {
       var attachments = <AiChatAttachment>[];
       if (reply is Map) {
         replyText = reply['content']?.toString() ?? reply['text']?.toString() ?? '';
-        attachments = AiChatMessage.parseAttachments(reply['attachments']);
+        attachments = AiChatMessage.parseReply(reply);
       }
       if (replyText.isEmpty) replyText = res['text']?.toString() ?? 'Пустой ответ';
       if (!mounted) return;
@@ -291,7 +291,7 @@ class _Header extends StatelessWidget {
                 hasCar
                     ? 'Выберите режим: авто, история осмотров или веб'
                     : 'Справочник и поиск по ремонту',
-                style: theme.textTheme.bodySmall?.copyWith(color: Colors.black54),
+                style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
               ),
             ],
           ),
@@ -315,9 +315,9 @@ class _EmptyHints extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
+            Text(
               'Справочно: сверяйтесь с мануалом производителя.',
-              style: TextStyle(fontSize: 12, color: Colors.black54),
+              style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
             ),
             const SizedBox(height: 8),
             Text(
@@ -402,7 +402,7 @@ class _LoadingRow extends StatelessWidget {
         children: [
           SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
           SizedBox(width: 10),
-          Text('Готовлю ответ…', style: TextStyle(color: Colors.black54)),
+          Text('Готовлю ответ…'),
         ],
       ),
     );

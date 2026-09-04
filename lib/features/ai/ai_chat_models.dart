@@ -56,7 +56,7 @@ class AiChatAttachment {
     if (raw is! Map) return null;
     final map = Map<String, dynamic>.from(raw);
     final type = map['type']?.toString() ?? '';
-    final url = map['url']?.toString() ?? '';
+    final url = (map['url'] ?? map['preview_url'] ?? map['href'] ?? '').toString();
     if (type.isEmpty || url.isEmpty) return null;
     return AiChatAttachment(
       type: type,
@@ -93,5 +93,20 @@ class AiChatMessage {
   static List<AiChatAttachment> parseAttachments(dynamic raw) {
     if (raw is! List) return const [];
     return raw.map(AiChatAttachment.fromJson).whereType<AiChatAttachment>().toList();
+  }
+
+  static List<AiChatAttachment> parseReply(dynamic reply) {
+    if (reply is! Map) return const [];
+    final fromRoot = parseAttachments(reply['attachments']);
+    if (fromRoot.isNotEmpty) return fromRoot;
+    final blocks = reply['blocks'];
+    if (blocks is! List) return const [];
+    final out = <AiChatAttachment>[];
+    for (final block in blocks) {
+      if (block is Map) {
+        out.addAll(parseAttachments(block['attachments']));
+      }
+    }
+    return out;
   }
 }

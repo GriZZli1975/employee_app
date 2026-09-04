@@ -28,6 +28,8 @@ class EmployeeSession {
   static const _baseUrlKey = 'emp_base_url';
   static const _botUrlKey = 'emp_bot_url';
   static const _employeeKey = 'emp_cache';
+  static const _themeKey = 'emp_theme_dark';
+  static const _draftPrefix = 'emp_capture_draft_';
 
   String? _pcKey;
   String? _apiKey;
@@ -197,6 +199,57 @@ class EmployeeSession {
     } on TimeoutException {
       // ignore
     }
+  }
+
+  Future<bool> getThemeDark() async {
+    try {
+      final v = await _storage.read(key: _themeKey).timeout(_timeout);
+      if (v == '0' || v == 'false') return false;
+    } catch (_) {}
+    return true;
+  }
+
+  Future<void> saveThemeDark(bool dark) async {
+    await _storage.write(key: _themeKey, value: dark ? '1' : '0').timeout(_timeout);
+  }
+
+  String _draftKey(String kind, int? carId, String? plate) =>
+      '$_draftPrefix${kind}_${carId ?? plate ?? 'none'}';
+
+  Future<Map<String, dynamic>?> loadCaptureDraft({
+    required String kind,
+    int? carId,
+    String? plate,
+  }) async {
+    try {
+      final raw = await _storage.read(key: _draftKey(kind, carId, plate)).timeout(_timeout);
+      if (raw == null || raw.isEmpty) return null;
+      final data = jsonDecode(raw);
+      if (data is Map<String, dynamic>) return data;
+      if (data is Map) return Map<String, dynamic>.from(data);
+    } catch (_) {}
+    return null;
+  }
+
+  Future<void> saveCaptureDraft({
+    required String kind,
+    int? carId,
+    String? plate,
+    required Map<String, dynamic> draft,
+  }) async {
+    await _storage
+        .write(key: _draftKey(kind, carId, plate), value: jsonEncode(draft))
+        .timeout(_timeout);
+  }
+
+  Future<void> clearCaptureDraft({
+    required String kind,
+    int? carId,
+    String? plate,
+  }) async {
+    try {
+      await _storage.delete(key: _draftKey(kind, carId, plate)).timeout(_timeout);
+    } catch (_) {}
   }
 
   static QrPayload parseQr(String raw) {

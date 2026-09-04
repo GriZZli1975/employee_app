@@ -12,10 +12,14 @@ class HomeScreen extends StatefulWidget {
     super.key,
     required this.session,
     required this.onLogout,
+    required this.dark,
+    required this.onToggleTheme,
   });
 
   final EmployeeSession session;
   final VoidCallback onLogout;
+  final bool dark;
+  final VoidCallback onToggleTheme;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -25,6 +29,7 @@ class _HomeScreenState extends State<HomeScreen> {
   int _tabIndex = MainNavBar.inWorkTabIndex;
   String _name = 'Сотрудник';
   int? _employeeId;
+  int _inWorkCount = 0;
 
   final _inWorkKey = GlobalKey<InWorkScreenState>();
   final _znKey = GlobalKey<ZnTabScreenState>();
@@ -48,24 +53,33 @@ class _HomeScreenState extends State<HomeScreen> {
 
   void _onTabSelected(int index) {
     setState(() => _tabIndex = index);
-    if (index == MainNavBar.inWorkTabIndex) {
-      _inWorkKey.currentState?.reload();
-    } else if (index == 0) {
-      _znKey.currentState?.reload();
-    } else if (index == 2) {
-      _personalKey.currentState?.reload();
-    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(_name)),
+      appBar: AppBar(
+        title: Text(_name),
+        actions: [
+          IconButton(
+            tooltip: widget.dark ? 'Светлая тема' : 'Тёмная тема',
+            onPressed: widget.onToggleTheme,
+            icon: Icon(widget.dark ? Icons.light_mode_outlined : Icons.dark_mode_outlined),
+          ),
+        ],
+      ),
       body: IndexedStack(
         index: _tabIndex,
         children: [
           ZnTabScreen(key: _znKey, session: widget.session),
-          InWorkScreen(key: _inWorkKey, session: widget.session),
+          InWorkScreen(
+            key: _inWorkKey,
+            session: widget.session,
+            onCountChanged: (n) {
+              if (_inWorkCount == n) return;
+              setState(() => _inWorkCount = n);
+            },
+          ),
           PersonalScreen(
             key: _personalKey,
             session: widget.session,
@@ -78,6 +92,7 @@ class _HomeScreenState extends State<HomeScreen> {
       bottomNavigationBar: MainNavBar(
         selectedIndex: _tabIndex,
         onSelected: _onTabSelected,
+        inWorkCount: _inWorkCount,
       ),
     );
   }

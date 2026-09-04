@@ -164,9 +164,17 @@ class StooxWorkOrder {
     }
     if (value is Map) {
       if (value.isEmpty) return [];
-      final records = value.values.whereType<Map>().toList();
-      if (records.isNotEmpty) {
-        return records.map((e) => StooxLineItem(Map<String, dynamic>.from(e))).toList();
+      final catalog = <StooxLineItem>[];
+      var numericKeys = 0;
+      for (final entry in value.entries) {
+        if (entry.value is! Map) continue;
+        final map = Map<String, dynamic>.from(entry.value as Map);
+        map.putIfAbsent('id', () => entry.key);
+        catalog.add(StooxLineItem(map));
+        if (int.tryParse(entry.key.toString()) != null) numericKeys += 1;
+      }
+      if (catalog.isNotEmpty && (numericKeys == catalog.length || catalog.length > 1)) {
+        return catalog;
       }
       return [StooxLineItem(Map<String, dynamic>.from(value))];
     }
@@ -224,6 +232,27 @@ class StooxLineItem {
     final unit = unitPrice;
     if (unit != null) return unit * qty;
     return null;
+  }
+
+  /// `baskets > works > id` из MCP employee-tool — это id строки в корзине.
+  int? get basketWorkId {
+    final v = raw['basket_work_id'] ?? raw['basketWorkId'] ?? raw['id'];
+    if (v is int) return v > 0 ? v : null;
+    final n = int.tryParse(v?.toString() ?? '');
+    return n != null && n > 0 ? n : null;
+  }
+
+  bool get toWorkshop {
+    final v = raw['to_workshop'] ?? raw['toWorkshop'] ?? raw['is_done'] ?? raw['done'];
+    if (v == true || v == 1 || v == '1') return true;
+    if (v is num) return v != 0;
+    return v?.toString() == 'true';
+  }
+
+  StooxLineItem withToWorkshop(bool value) {
+    final map = Map<String, dynamic>.from(raw);
+    map['to_workshop'] = value ? 1 : 0;
+    return StooxLineItem(map);
   }
 }
 

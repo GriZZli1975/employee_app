@@ -6,10 +6,12 @@ class MainNavBar extends StatelessWidget {
     super.key,
     required this.selectedIndex,
     required this.onSelected,
+    this.inWorkCount = 0,
   });
 
   final int selectedIndex;
   final ValueChanged<int> onSelected;
+  final int inWorkCount;
 
   static const inWorkTabIndex = 1;
 
@@ -28,17 +30,9 @@ class MainNavBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.06),
-            blurRadius: 12,
-            offset: const Offset(0, -4),
-          ),
-        ],
-      ),
+    return Material(
+      elevation: 8,
+      color: scheme.surface,
       child: SafeArea(
         top: false,
         child: Padding(
@@ -47,17 +41,19 @@ class MainNavBar extends StatelessWidget {
             children: List.generate(3, (i) {
               final isCenter = i == inWorkTabIndex;
               final selected = selectedIndex == i;
-              final color = selected ? scheme.primary : Colors.black54;
+              final color = selected ? scheme.primary : scheme.onSurfaceVariant;
 
               if (isCenter) {
+                final bg = selected ? scheme.primary : scheme.primary.withValues(alpha: 0.28);
+                final fg = selected ? scheme.onPrimary : scheme.primary;
                 return Expanded(
                   flex: 2,
                   child: Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 2),
                     child: Material(
-                      color: selected ? scheme.primary : scheme.primary.withValues(alpha: 0.9),
+                      color: bg,
                       borderRadius: BorderRadius.circular(20),
-                      elevation: selected ? 4 : 2,
+                      elevation: selected ? 4 : 0,
                       child: InkWell(
                         onTap: () => onSelected(i),
                         borderRadius: BorderRadius.circular(20),
@@ -66,18 +62,22 @@ class MainNavBar extends StatelessWidget {
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(
-                                selected ? selectedIcons[i] : icons[i],
-                                color: Colors.white,
-                                size: 26,
+                              Badge(
+                                isLabelVisible: inWorkCount > 0,
+                                label: Text('$inWorkCount', style: const TextStyle(fontSize: 10)),
+                                child: Icon(
+                                  selected ? selectedIcons[i] : icons[i],
+                                  color: fg,
+                                  size: 26,
+                                ),
                               ),
                               const SizedBox(height: 2),
                               Text(
                                 labels[i],
-                                style: const TextStyle(
-                                  fontSize: 10,
+                                style: TextStyle(
+                                  fontSize: 11,
                                   fontWeight: FontWeight.w700,
-                                  color: Colors.white,
+                                  color: fg,
                                 ),
                               ),
                             ],
@@ -101,13 +101,13 @@ class MainNavBar extends StatelessWidget {
                         Icon(
                           selected ? selectedIcons[i] : icons[i],
                           color: color,
-                          size: 20,
+                          size: 22,
                         ),
                         const SizedBox(height: 2),
                         Text(
                           labels[i],
                           style: TextStyle(
-                            fontSize: 9,
+                            fontSize: 11,
                             fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
                             color: color,
                           ),

@@ -224,6 +224,64 @@ class StooxApi {
     return t.replaceAll(RegExp(r'/+$'), '');
   }
 
+  /// Отметка работы в корзине: `to_workshop` 1 = сделано / в цехе, 0 = снять.
+  Future<void> updateBasketWork({
+    required int basketWorkId,
+    required bool toWorkshop,
+  }) async {
+    final origin = await session.getBaseUrl();
+    if (origin.isEmpty) {
+      throw StooxApiException(0, 'Укажите адрес сервера Stoox');
+    }
+    final pcKey = await session.getPcKey() ?? '';
+    if (pcKey.isEmpty) {
+      throw StooxApiException(401, 'Отсканируйте QR-ключ сотрудника');
+    }
+    final apiKey = await session.getApiKey();
+    final headers = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+      'pc-key': pcKey,
+      'key': apiKey,
+      'Key': apiKey,
+    };
+    final query = {
+      'basket_work_id': '$basketWorkId',
+      'to_workshop': toWorkshop ? '1' : '0',
+    };
+    StooxApiException? last;
+    for (final path in ['/api/v1/pc_bot/update_work', '/outer/api/v1/pc_bot/update_work']) {
+      final uri = Uri.parse('$origin$path').replace(queryParameters: query);
+      try {
+        final res = await http.post(uri, headers: headers).timeout(const Duration(seconds: 20));
+        if (res.statusCode >= 400) {
+          last = StooxApiException(res.statusCode, _extractError(res.body));
+          if (res.statusCode == 404) continue;
+          throw last;
+        }
+        if (res.body.isNotEmpty) {
+          try {
+            final parsed = jsonDecode(res.body);
+            if (parsed is Map && (parsed['success'] == false || parsed['error'] != null)) {
+              throw StooxApiException(
+                res.statusCode,
+                parsed['error']?.toString() ?? parsed['message']?.toString() ?? 'Не удалось обновить работу',
+              );
+            }
+          } catch (e) {
+            if (e is StooxApiException) rethrow;
+          }
+        }
+        return;
+      } on StooxApiException {
+        rethrow;
+      } catch (e) {
+        last = StooxApiException(0, e.toString());
+      }
+    }
+    throw last ?? StooxApiException(0, 'Не удалось обновить работу');
+  }
+
   Future<Map<String, dynamic>> _mcpCall({
     required String toolName,
     required Map<String, dynamic> arguments,

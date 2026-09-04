@@ -21,6 +21,7 @@ class ZnTabScreenState extends State<ZnTabScreen> {
 
   late DateTime _dateFrom;
   late DateTime _dateTo;
+  DatePreset _preset = DatePreset.month;
   bool _loading = false;
   String? _error;
   List<StooxWorkOrder> _sales = [];
@@ -30,9 +31,35 @@ class ZnTabScreenState extends State<ZnTabScreen> {
   void initState() {
     super.initState();
     final now = DateTime.now();
+    _preset = DatePreset.month;
     _dateFrom = DateTime(now.year, now.month, 1);
     _dateTo = now;
     reload();
+  }
+
+  void _applyPreset(DatePreset preset, {bool reloadAfter = true}) {
+    final now = DateTime.now();
+    DateTime from = _dateFrom;
+    DateTime to = _dateTo;
+    switch (preset) {
+      case DatePreset.day:
+        from = DateTime(now.year, now.month, now.day);
+        to = now;
+      case DatePreset.week:
+        from = DateTime(now.year, now.month, now.day).subtract(const Duration(days: 6));
+        to = now;
+      case DatePreset.month:
+        from = DateTime(now.year, now.month, 1);
+        to = now;
+      case DatePreset.custom:
+        break;
+    }
+    setState(() {
+      _preset = preset;
+      _dateFrom = from;
+      _dateTo = to;
+    });
+    if (reloadAfter) reload();
   }
 
   Future<void> reload() async {
@@ -75,12 +102,14 @@ class ZnTabScreenState extends State<ZnTabScreen> {
     );
     if (picked == null) return;
     setState(() {
+      _preset = DatePreset.custom;
       if (from) {
         _dateFrom = picked;
       } else {
         _dateTo = picked;
       }
     });
+    reload();
   }
 
   void _openList({required String title, required List<StooxWorkOrder> orders, required String emptyText}) {
@@ -106,9 +135,10 @@ class ZnTabScreenState extends State<ZnTabScreen> {
           DateFilterCard(
             dateFrom: _dateFmt.format(_dateFrom),
             dateTo: _dateFmt.format(_dateTo),
+            preset: _preset,
+            onPreset: _applyPreset,
             onPickFrom: () => _pickDate(from: true),
             onPickTo: () => _pickDate(from: false),
-            onApply: reload,
             loading: _loading,
           ),
           if (_error != null) ...[
@@ -147,11 +177,6 @@ class ZnTabScreenState extends State<ZnTabScreen> {
                     ),
             icon: const Icon(Icons.verified_outlined),
             label: Text('Гарантийные ЗН (${_warranty.length})'),
-          ),
-          const SizedBox(height: 16),
-          Text(
-            'Выберите период и нажмите «Обновить», затем откройте нужный список.',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.black54),
           ),
         ],
       ),

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -6,7 +7,8 @@ import 'package:image_picker/image_picker.dart';
 import '../../core/bot_api.dart';
 import '../../core/session.dart';
 import '../../core/work_order.dart';
-import '../ai/ai_chat_screen.dart';
+import '../../widgets/media_carousel.dart';
+import 'burst_camera_screen.dart';
 import 'voice_recorder.dart';
 
 class CaptureScreen extends StatefulWidget {
@@ -31,118 +33,232 @@ class CaptureScreen extends StatefulWidget {
   State<CaptureScreen> createState() => _CaptureScreenState();
 }
 
-class _UploadedItem {
-  _UploadedItem({
+class _SessionItem {
+  _SessionItem({
+    required this.id,
     required this.label,
-    required this.mediaId,
+    required this.messageType,
+    required this.filePath,
+    this.mediaId,
     this.previewUrl,
+    this.failed = false,
   });
 
+  final String id;
   final String label;
-  final String mediaId;
-  final String? previewUrl;
+  final String messageType;
+  final String filePath;
+  String? mediaId;
+  String? previewUrl;
+  bool failed;
+
+  bool get isPhoto => messageType == 'photo';
 }
 
-class _CompleteResult {
-  _CompleteResult({
+class _DraftResult {
+  _DraftResult({
     required this.summary,
     required this.transcript,
     required this.workItems,
     required this.transcriptionOk,
-    required this.mediaCount,
   });
 
-  final String summary;
-  final String transcript;
-  final List<String> workItems;
+  String summary;
+  String transcript;
+  List<String> workItems;
   final bool transcriptionOk;
-  final int mediaCount;
 }
 
 class _CaptureScreenState extends State<CaptureScreen> {
   final _picker = ImagePicker();
   final _voice = VoiceRecorder();
-  final _sessionId = 'sess_${DateTime.now().millisecondsSinceEpoch}';
-  final _items = <_UploadedItem>[];
-  bool _busy = false;
+  final _notesCtrl = TextEditingController();
+  final _items = <_SessionItem>[];
+  late String _sessionId;
+  bool _finishing = false;
   bool _recording = false;
+  DateTime? _recordStarted;
+  Timer? _recordTick;
   String? _error;
-  _CompleteResult? _done;
+  _DraftResult? _draft;
+  final _workCtrls = <TextEditingController>[];
+  final _transcriptCtrl = TextEditingController();
+  int _pendingUploads = 0;
 
   BotApi get _bot => BotApi(widget.session);
 
   @override
+  void initState() {
+    super.initState();
+    _sessionId = 'sess_${DateTime.now().millisecondsSinceEpoch}';
+    _restoreDraft();
+  }
+
+  @override
   void dispose() {
+    _recordTick?.cancel();
+    _notesCtrl.dispose();
+    _transcriptCtrl.dispose();
+    for (final c in _workCtrls) {
+      c.dispose();
+    }
     _voice.dispose();
     super.dispose();
   }
 
-  Future<void> _upload({
+  Future<void> _restoreDraft() async {
+    final data = await widget.session.loadCaptureDraft(
+      kind: widget.kind,
+      carId: widget.order.carId,
+      plate: widget.order.regNumber,
+    );
+    if (data == null || !mounted) return;
+    final sid = data['session_id']?.toString();
+    if (sid != null && sid.isNotEmpty) _sessionId = sid;
+    _notesCtrl.text = data['notes']?.toString() ?? '';
+    final rawItems = data['items'];
+    if (rawItems is List) {
+      for (final raw in rawItems) {
+        if (raw is! Map) continue;
+        final path = raw['filePath']?.toString() ?? '';
+        if (path.isEmpty || !File(path).existsSync()) continue;
+        _items.add(
+          _SessionItem(
+            id: raw['id']?.toString() ?? UniqueKey().toString(),
+            label: raw['label']?.toString() ?? 'Файл',
+            messageType: raw['messageType']?.toString() ?? 'photo',
+            filePath: path,
+            mediaId: raw['mediaId']?.toString(),
+            previewUrl: raw['previewUrl']?.toString(),
+            failed: raw['failed'] == true,
+          ),
+        );
+      }
+    }
+    setState(() {});
+    for (final item in List<_SessionItem>.from(_items)) {
+      if ((item.mediaId == null || item.mediaId!.isEmpty) && !item.failed) {
+        unawaited(_uploadItem(item));
+      }
+    }
+  }
+
+  Future<void> _persistDraft() async {
+    await widget.session.saveCaptureDraft(
+      kind: widget.kind,
+      carId: widget.order.carId,
+      plate: widget.order.regNumber,
+      draft: {
+        'session_id': _sessionId,
+        'notes': _notesCtrl.text,
+        'items': _items
+            .map(
+              (e) => {
+                'id': e.id,
+                'label': e.label,
+                'messageType': e.messageType,
+                'filePath': e.filePath,
+                'mediaId': e.mediaId,
+                'previewUrl': e.previewUrl,
+                'failed': e.failed,
+              },
+            )
+            .toList(),
+      },
+    );
+  }
+
+  void _enqueueFile({
     required File file,
     required String messageType,
     required String filename,
     required String mimeType,
     required String label,
-  }) async {
+  }) {
+    final item = _SessionItem(
+      id: UniqueKey().toString(),
+      label: label,
+      messageType: messageType,
+      filePath: file.path,
+    );
     setState(() {
-      _busy = true;
+      _items.insert(0, item);
       _error = null;
     });
+    unawaited(_persistDraft());
+    unawaited(_uploadItem(item, filename: filename, mimeType: mimeType));
+  }
+
+  Future<void> _uploadItem(_SessionItem item, {String? filename, String? mimeType}) async {
+    setState(() => _pendingUploads++);
     try {
+      final ext = item.filePath.split('.').last.toLowerCase();
       final res = await _bot.uploadFile(
-        file: file,
+        file: File(item.filePath),
         kind: widget.kind,
-        messageType: messageType,
-        filename: filename,
-        mimeType: mimeType,
+        messageType: item.messageType,
+        filename: filename ?? 'file.$ext',
+        mimeType: mimeType ?? _mimeFor(item.messageType, ext),
         order: widget.order,
         sessionId: _sessionId,
         employeeId: widget.employeeId,
       );
-      final id = res['media_id']?.toString() ?? res['file_id']?.toString() ?? '';
-      if (!mounted) return;
-      setState(() {
-        _items.insert(
-          0,
-          _UploadedItem(
-            label: label,
-            mediaId: id,
-            previewUrl: res['preview_url']?.toString(),
-          ),
-        );
-      });
-    } on BotApiException catch (e) {
-      if (mounted) setState(() => _error = e.toString());
-    } catch (e) {
-      if (mounted) {
-        setState(() => _error = 'Не удалось отправить файл. Проверьте HTTPS URL бота и сеть.\n$e');
-      }
+      item.mediaId = res['media_id']?.toString() ?? res['file_id']?.toString();
+      item.previewUrl = res['preview_url']?.toString();
+      item.failed = false;
+    } catch (_) {
+      item.failed = true;
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) {
+        setState(() => _pendingUploads = (_pendingUploads - 1).clamp(0, 999));
+        unawaited(_persistDraft());
+      }
     }
   }
 
-  Future<void> _pickImage(ImageSource source) async {
-    final file = await _picker.pickImage(
-      source: source,
-      imageQuality: 70,
-      maxWidth: 1920,
-      maxHeight: 1920,
-    );
-    if (file == null) return;
-    await _upload(
-      file: File(file.path),
-      messageType: 'photo',
-      filename: file.name.isNotEmpty ? file.name : 'photo.jpg',
-      mimeType: 'image/jpeg',
-      label: source == ImageSource.camera ? 'Фото с камеры' : 'Фото из галереи',
+  String _mimeFor(String type, String ext) {
+    if (type == 'photo') return 'image/jpeg';
+    if (type == 'video') return 'video/mp4';
+    if (ext == 'wav') return 'audio/wav';
+    if (ext == 'm4a') return 'audio/mp4';
+    return 'application/octet-stream';
+  }
+
+  Future<void> _openBurstCamera() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => BurstCameraScreen(
+          onCaptured: (file) async {
+            _enqueueFile(
+              file: file,
+              messageType: 'photo',
+              filename: 'photo_${DateTime.now().millisecondsSinceEpoch}.jpg',
+              mimeType: 'image/jpeg',
+              label: 'Фото',
+            );
+          },
+        ),
+      ),
     );
   }
 
-  Future<void> _pickVideo(ImageSource source) async {
-    final file = await _picker.pickVideo(source: source, maxDuration: const Duration(minutes: 2));
+  Future<void> _pickGallery() async {
+    final files = await _picker.pickMultiImage(imageQuality: 70, maxWidth: 1920, maxHeight: 1920);
+    for (final file in files) {
+      _enqueueFile(
+        file: File(file.path),
+        messageType: 'photo',
+        filename: file.name.isNotEmpty ? file.name : 'photo.jpg',
+        mimeType: 'image/jpeg',
+        label: 'Фото',
+      );
+    }
+  }
+
+  Future<void> _pickVideo() async {
+    final file = await _picker.pickVideo(source: ImageSource.camera, maxDuration: const Duration(minutes: 2));
     if (file == null) return;
-    await _upload(
+    _enqueueFile(
       file: File(file.path),
       messageType: 'video',
       filename: file.name.isNotEmpty ? file.name : 'video.mp4',
@@ -151,20 +267,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
     );
   }
 
-  Future<void> _toggleVoice() async {
-    if (_recording) {
-      final path = await _voice.stop();
-      setState(() => _recording = false);
-      if (path == null) return;
-      await _upload(
-        file: File(path),
-        messageType: 'voice',
-        filename: 'voice.wav',
-        mimeType: 'audio/wav',
-        label: 'Голос',
-      );
-      return;
-    }
+  Future<void> _startVoice() async {
+    if (_recording) return;
     final ok = await _voice.start();
     if (!ok) {
       if (mounted) {
@@ -174,32 +278,68 @@ class _CaptureScreenState extends State<CaptureScreen> {
       }
       return;
     }
-    setState(() => _recording = true);
+    setState(() {
+      _recording = true;
+      _recordStarted = DateTime.now();
+    });
+    _recordTick?.cancel();
+    _recordTick = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
   }
 
-  Future<void> _finish() async {
-    if (_busy || _done != null) return;
-    if (_recording) {
-      final path = await _voice.stop();
-      setState(() => _recording = false);
-      if (path != null) {
-        await _upload(
-          file: File(path),
-          messageType: 'voice',
-          filename: 'voice.wav',
-          mimeType: 'audio/wav',
-          label: 'Голос',
-        );
-      }
-    }
-    if (_items.isEmpty) {
-      setState(() => _error = 'Сначала снимите фото, видео или надиктуйте комментарий.');
+  Future<void> _stopVoice() async {
+    if (!_recording) return;
+    _recordTick?.cancel();
+    final path = await _voice.stop();
+    setState(() {
+      _recording = false;
+      _recordStarted = null;
+    });
+    if (path == null) return;
+    _enqueueFile(
+      file: File(path),
+      messageType: 'voice',
+      filename: 'voice.wav',
+      mimeType: 'audio/wav',
+      label: 'Голос',
+    );
+  }
+
+  String _recordLabel() {
+    final start = _recordStarted;
+    if (start == null) return '0:00';
+    final s = DateTime.now().difference(start).inSeconds;
+    final m = (s ~/ 60).toString();
+    final ss = (s % 60).toString().padLeft(2, '0');
+    return '$m:$ss';
+  }
+
+  Future<void> _removeItem(_SessionItem item) async {
+    setState(() => _items.remove(item));
+    await _persistDraft();
+  }
+
+  List<MediaCarouselItem> get _photoCarousel => _items
+      .where((e) => e.isPhoto)
+      .map((e) => MediaCarouselItem(label: e.label, filePath: e.filePath, url: e.previewUrl))
+      .toList();
+
+  Future<void> _prepareDraft() async {
+    if (_finishing) return;
+    if (_recording) await _stopVoice();
+    if (_items.isEmpty && _notesCtrl.text.trim().isEmpty) {
+      setState(() => _error = 'Снимите фото, наговорите или напишите комментарий.');
       return;
     }
     setState(() {
-      _busy = true;
+      _finishing = true;
       _error = null;
     });
+    final deadline = DateTime.now().add(const Duration(seconds: 25));
+    while (_pendingUploads > 0 && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+    }
     try {
       final res = await _bot.completeInspection(
         sessionId: _sessionId,
@@ -207,86 +347,127 @@ class _CaptureScreenState extends State<CaptureScreen> {
         order: widget.order,
         employeeId: widget.employeeId,
         employeeName: widget.employeeName,
+        notes: _notesCtrl.text.trim(),
+        notifyMp: false,
       );
       if (!mounted) return;
+      final works = (res['work_items'] is List)
+          ? (res['work_items'] as List).map((e) => e.toString()).where((e) => e.trim().isNotEmpty).toList()
+          : <String>[];
+      for (final c in _workCtrls) {
+        c.dispose();
+      }
+      _workCtrls
+        ..clear()
+        ..addAll(works.map((w) => TextEditingController(text: w)));
+      _transcriptCtrl.text = res['transcript']?.toString() ?? _notesCtrl.text;
       setState(() {
-        _done = _CompleteResult(
+        _draft = _DraftResult(
           summary: res['summary']?.toString() ?? '',
-          transcript: res['transcript']?.toString() ?? '',
-          workItems: _stringList(res['work_items']),
+          transcript: _transcriptCtrl.text,
+          workItems: works,
           transcriptionOk: res['transcription_ok'] != false,
-          mediaCount: (res['media_count'] is num)
-              ? (res['media_count'] as num).toInt()
-              : _items.length,
         );
       });
     } on BotApiException catch (e) {
       if (mounted) setState(() => _error = e.toString());
     } catch (e) {
-      if (mounted) setState(() => _error = 'Не удалось отправить мастеру-приёмщику.\n$e');
+      if (mounted) setState(() => _error = 'Не удалось подготовить черновик.\n$e');
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (mounted) setState(() => _finishing = false);
     }
   }
 
-  static List<String> _stringList(dynamic value) {
-    if (value is! List) return const [];
-    return value.map((e) => e.toString().trim()).where((e) => e.isNotEmpty).toList();
+  Future<void> _sendToMp() async {
+    if (_finishing || _draft == null) return;
+    setState(() => _finishing = true);
+    try {
+      final works = _workCtrls.map((c) => c.text.trim()).where((e) => e.isNotEmpty).toList();
+      await _bot.completeInspection(
+        sessionId: _sessionId,
+        kind: widget.kind,
+        order: widget.order,
+        employeeId: widget.employeeId,
+        employeeName: widget.employeeName,
+        notes: _notesCtrl.text.trim(),
+        transcript: _transcriptCtrl.text.trim(),
+        workItems: works,
+        notifyMp: true,
+      );
+      await widget.session.clearCaptureDraft(
+        kind: widget.kind,
+        carId: widget.order.carId,
+        plate: widget.order.regNumber,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Отправлено мастеру-приёмщику')),
+      );
+      Navigator.of(context).pop();
+    } on BotApiException catch (e) {
+      if (mounted) setState(() => _error = e.toString());
+    } catch (e) {
+      if (mounted) setState(() => _error = 'Не удалось отправить МП.\n$e');
+    } finally {
+      if (mounted) setState(() => _finishing = false);
+    }
   }
 
-  void _openAi() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => AiChatScreen(
-          session: widget.session,
-          order: widget.order,
-          employeeId: widget.employeeId,
-          employeeName: widget.employeeName,
+  Future<void> _discardDraft() async {
+    await widget.session.clearCaptureDraft(
+      kind: widget.kind,
+      carId: widget.order.carId,
+      plate: widget.order.regNumber,
+    );
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final draft = _draft;
+    return PopScope(
+      canPop: true,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) unawaited(_persistDraft());
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(widget.title),
+          actions: [
+            TextButton(
+              onPressed: _discardDraft,
+              child: const Text('Сбросить'),
+            ),
+          ],
+        ),
+        body: draft != null ? _buildDraft(context, draft) : _buildCapture(context),
+        bottomNavigationBar: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+            child: FilledButton.icon(
+              onPressed: _finishing
+                  ? null
+                  : draft != null
+                      ? _sendToMp
+                      : _prepareDraft,
+              icon: Icon(draft != null ? Icons.send : Icons.check),
+              label: Text(
+                _finishing
+                    ? 'Секунду…'
+                    : draft != null
+                        ? 'Отправить МП'
+                        : 'Готово',
+              ),
+            ),
+          ),
         ),
       ),
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
+  Widget _buildCapture(BuildContext context) {
     final order = widget.order;
-    final done = _done;
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.title),
-        actions: [
-          IconButton(
-            tooltip: 'ИИ-чат',
-            onPressed: _openAi,
-            icon: const Icon(Icons.smart_toy_outlined),
-          ),
-        ],
-      ),
-      body: done != null ? _buildDone(context, done) : _buildCapture(context, order),
-      bottomNavigationBar: done != null
-          ? SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-                child: FilledButton(
-                  onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('Готово'),
-                ),
-              ),
-            )
-          : SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-                child: FilledButton.icon(
-                  onPressed: _busy ? null : _finish,
-                  icon: const Icon(Icons.send),
-                  label: Text(_recording ? 'Стоп и отправить МП' : 'Отправить МП'),
-                ),
-              ),
-            ),
-    );
-  }
-
-  Widget _buildCapture(BuildContext context, StooxWorkOrder order) {
+    final scheme = Theme.of(context).colorScheme;
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
       children: [
@@ -295,142 +476,236 @@ class _CaptureScreenState extends State<CaptureScreen> {
           style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
         ),
         if (order.carInfo.isNotEmpty)
-          Text(order.carInfo, style: const TextStyle(color: Colors.black54)),
-        const SizedBox(height: 8),
-        const Text(
-          'Снимите фото, видео и надиктуйте, что нужно сделать. '
-          'Когда всё готово — «Отправить МП»: голос расшифруется, получится список работ, '
-          'и ИИ сам напишет мастеру-приёмщику в чат этого клиента.',
-          style: TextStyle(color: Colors.black54, height: 1.35),
-        ),
-        const SizedBox(height: 16),
-        if (_busy) const LinearProgressIndicator(minHeight: 3),
-        if (_error != null) ...[
-          const SizedBox(height: 8),
-          Material(
-            color: Theme.of(context).colorScheme.errorContainer,
-            borderRadius: BorderRadius.circular(12),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Text(_error!),
-            ),
-          ),
-        ],
+          Text(order.carInfo, style: TextStyle(color: scheme.onSurfaceVariant)),
         const SizedBox(height: 12),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
+        if (_error != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(_error!, style: TextStyle(color: scheme.error)),
+          ),
+        Row(
           children: [
-            FilledButton.icon(
-              onPressed: _busy ? null : () => _pickImage(ImageSource.camera),
-              icon: const Icon(Icons.photo_camera),
-              label: const Text('Камера'),
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: _openBurstCamera,
+                icon: const Icon(Icons.photo_camera),
+                label: const Text('Камера'),
+              ),
             ),
-            FilledButton.tonalIcon(
-              onPressed: _busy ? null : () => _pickImage(ImageSource.gallery),
+            const SizedBox(width: 8),
+            IconButton.filledTonal(
+              tooltip: 'Галерея',
+              onPressed: _pickGallery,
               icon: const Icon(Icons.photo_library_outlined),
-              label: const Text('Галерея'),
             ),
-            FilledButton.tonalIcon(
-              onPressed: _busy ? null : () => _pickVideo(ImageSource.camera),
+            IconButton.filledTonal(
+              tooltip: 'Видео',
+              onPressed: _pickVideo,
               icon: const Icon(Icons.videocam_outlined),
-              label: const Text('Видео'),
-            ),
-            FilledButton.tonalIcon(
-              onPressed: _busy ? null : _toggleVoice,
-              icon: Icon(_recording ? Icons.stop : Icons.mic_none),
-              label: Text(_recording ? 'Стоп' : 'Голос'),
             ),
           ],
         ),
         const SizedBox(height: 20),
-        Text('В этой сессии', style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(height: 8),
-        if (_items.isEmpty)
-          const Text(
-            'Пока ничего не снято.',
-            style: TextStyle(color: Colors.black54),
-          )
-        else
-          ..._items.map(
-            (item) => Card(
-              child: ListTile(
-                leading: item.previewUrl != null
-                    ? ClipRRect(
-                        borderRadius: BorderRadius.circular(8),
-                        child: Image.network(
-                          item.previewUrl!,
-                          width: 48,
-                          height: 48,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, _, _) => const Icon(Icons.check_circle_outline),
-                        ),
-                      )
-                    : const Icon(Icons.check_circle_outline),
-                title: Text(item.label),
-                subtitle: Text(
-                  item.mediaId.isEmpty ? 'загружено' : item.mediaId,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+        Center(
+          child: Column(
+            children: [
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTapDown: (_) => _startVoice(),
+                onTapUp: (_) => _stopVoice(),
+                onTapCancel: _stopVoice,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 160),
+                  width: 92,
+                  height: 92,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: _recording ? scheme.error : scheme.primary,
+                    boxShadow: [
+                      BoxShadow(
+                        color: (_recording ? scheme.error : scheme.primary).withValues(alpha: 0.35),
+                        blurRadius: _recording ? 18 : 8,
+                      ),
+                    ],
+                  ),
+                  child: Icon(_recording ? Icons.stop : Icons.mic, color: scheme.onPrimary, size: 40),
                 ),
               ),
+              const SizedBox(height: 8),
+              Text(
+                _recording ? 'Говорите · ${_recordLabel()}' : 'Зажмите и говорите',
+                style: TextStyle(color: scheme.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        TextField(
+          controller: _notesCtrl,
+          minLines: 2,
+          maxLines: 5,
+          onChanged: (_) => unawaited(_persistDraft()),
+          decoration: const InputDecoration(
+            labelText: 'Комментарий текстом',
+            hintText: 'Можно написать, если не хочется диктовать',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 20),
+        Text('Снято', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        if (_items.isEmpty)
+          Text('Пока пусто — снимайте, не дожидаясь загрузки.', style: TextStyle(color: scheme.onSurfaceVariant))
+        else
+          GridView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: _items.length,
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              mainAxisSpacing: 8,
+              crossAxisSpacing: 8,
             ),
+            itemBuilder: (context, i) {
+              final item = _items[i];
+              final photos = _photoCarousel;
+              final photoIndex = photos.indexWhere((p) => p.filePath == item.filePath);
+              return Dismissible(
+                key: ValueKey(item.id),
+                direction: DismissDirection.up,
+                onDismissed: (_) => _removeItem(item),
+                child: GestureDetector(
+                  onTap: () {
+                    if (item.failed) {
+                      unawaited(_uploadItem(item));
+                      return;
+                    }
+                    if (item.isPhoto && photoIndex >= 0) {
+                      openMediaCarousel(context, items: photos, initialIndex: photoIndex);
+                    }
+                  },
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        if (item.isPhoto && File(item.filePath).existsSync())
+                          Image.file(File(item.filePath), fit: BoxFit.cover)
+                        else
+                          ColoredBox(
+                            color: scheme.surfaceContainerHighest,
+                            child: Icon(
+                              item.messageType == 'voice' ? Icons.mic : Icons.videocam,
+                              color: scheme.primary,
+                            ),
+                          ),
+                        Positioned(
+                          top: 4,
+                          right: 4,
+                          child: InkWell(
+                            onTap: () => _removeItem(item),
+                            child: const CircleAvatar(
+                              radius: 12,
+                              backgroundColor: Colors.black54,
+                              child: Icon(Icons.close, size: 14, color: Colors.white),
+                            ),
+                          ),
+                        ),
+                        if (item.failed)
+                          const ColoredBox(
+                            color: Color(0x66000000),
+                            child: Icon(Icons.error_outline, color: Colors.white),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
           ),
       ],
     );
   }
 
-  Widget _buildDone(BuildContext context, _CompleteResult done) {
+  Widget _buildDraft(BuildContext context, _DraftResult draft) {
+    final scheme = Theme.of(context).colorScheme;
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
       children: [
-        const ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: Icon(Icons.check_circle, color: Colors.green, size: 36),
-          title: Text('Отправлено мастеру-приёмщику'),
-          subtitle: Text(
-            'ИИ написал в чат выбранного клиента: расшифровка, список работ, фото и видео.',
+        Text('Проверьте перед отправкой МП', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        if (!draft.transcriptionOk)
+          Text(
+            'Голос мог не расшифроваться — поправьте текст ниже.',
+            style: TextStyle(color: scheme.error),
+          ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _transcriptCtrl,
+          minLines: 4,
+          maxLines: 10,
+          decoration: const InputDecoration(
+            labelText: 'Что наговорил / написал исполнитель',
+            border: OutlineInputBorder(),
           ),
         ),
-        if (!done.transcriptionOk)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Text(
-              'Голос не расшифрован: на боте нужен OPENAI_API_KEY для Whisper.',
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Text('Работы', style: Theme.of(context).textTheme.titleMedium),
+            const Spacer(),
+            TextButton.icon(
+              onPressed: () => setState(() => _workCtrls.add(TextEditingController())),
+              icon: const Icon(Icons.add),
+              label: const Text('Строка'),
             ),
-          ),
-        if (done.summary.isNotEmpty) ...[
-          Text('Кратко', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 4),
-          Text(done.summary),
-          const SizedBox(height: 16),
-        ],
-        Text('Что сделать', style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(height: 8),
-        if (done.workItems.isEmpty)
-          const Text('Список пуст — смотрите медиа и расшифровку.', style: TextStyle(color: Colors.black54))
-        else
-          ...done.workItems.asMap().entries.map(
-            (e) => ListTile(
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              leading: CircleAvatar(
-                radius: 12,
-                child: Text('${e.key + 1}', style: const TextStyle(fontSize: 12)),
+          ],
+        ),
+        ..._workCtrls.asMap().entries.map(
+              (e) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: TextField(
+                  controller: e.value,
+                  decoration: InputDecoration(
+                    prefixText: '${e.key + 1}. ',
+                    border: const OutlineInputBorder(),
+                    suffixIcon: IconButton(
+                      icon: const Icon(Icons.delete_outline),
+                      onPressed: () {
+                        setState(() {
+                          _workCtrls.removeAt(e.key).dispose();
+                        });
+                      },
+                    ),
+                  ),
+                ),
               ),
-              title: Text(e.value),
+            ),
+        if (_photoCarousel.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Text('Фото', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: 88,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: _photoCarousel.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 8),
+              itemBuilder: (context, i) {
+                final p = _photoCarousel[i];
+                return GestureDetector(
+                  onTap: () => openMediaCarousel(context, items: _photoCarousel, initialIndex: i),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: p.filePath != null && File(p.filePath!).existsSync()
+                        ? Image.file(File(p.filePath!), width: 88, height: 88, fit: BoxFit.cover)
+                        : const SizedBox(width: 88, height: 88, child: Icon(Icons.image)),
+                  ),
+                );
+              },
             ),
           ),
-        const SizedBox(height: 16),
-        Text('Что наговорил исполнитель', style: Theme.of(context).textTheme.titleMedium),
-        const SizedBox(height: 8),
-        Text(
-          done.transcript.isEmpty ? 'Голос не записан или не расшифрован.' : done.transcript,
-          style: const TextStyle(height: 1.4),
-        ),
-        const SizedBox(height: 16),
-        Text('Медиа: ${done.mediaCount}', style: const TextStyle(color: Colors.black54)),
+        ],
       ],
     );
   }

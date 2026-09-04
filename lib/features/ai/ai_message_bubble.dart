@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../widgets/media_carousel.dart';
 import 'ai_chat_models.dart';
 
 class AiMessageBubble extends StatelessWidget {
@@ -40,7 +41,11 @@ class AiMessageBubble extends StatelessWidget {
                 bottomRight: Radius.circular(isUser ? 4 : 14),
               ),
             ),
-            child: _RichMessageText(text: message.text, onLinkTap: onOpenUrl),
+            child: _RichMessageText(
+              text: message.text,
+              images: message.images,
+              onLinkTap: onOpenUrl,
+            ),
           ),
           if (!isUser && message.images.isNotEmpty) ...[
             const SizedBox(height: 8),
@@ -65,14 +70,20 @@ class AiMessageBubble extends StatelessWidget {
 }
 
 class _RichMessageText extends StatelessWidget {
-  const _RichMessageText({required this.text, required this.onLinkTap});
+  const _RichMessageText({
+    required this.text,
+    required this.onLinkTap,
+    this.images = const [],
+  });
 
   final String text;
   final Future<void> Function(String? url) onLinkTap;
+  final List<Map<String, dynamic>> images;
 
   static final _urlRe = RegExp(r'https?://[^\s\]\)<>"]+', caseSensitive: false);
   static final _mdLinkRe = RegExp(r'\[([^\]]+)\]\((https?://[^)]+)\)');
-  static final _mdImageRe = RegExp(r'!\[[^\]]*\]\([^)]+\)');
+  static final _mdImageRe = RegExp(r'!\[[^\]]*\]\(([^)]+)\)');
+  static final _photoLineRe = RegExp(r'^📷\s*(.*)$');
 
   @override
   Widget build(BuildContext context) {
@@ -83,39 +94,82 @@ class _RichMessageText extends StatelessWidget {
     cleaned = cleaned.replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
     if (cleaned.isEmpty) return const SizedBox.shrink();
 
-    final spans = <InlineSpan>[];
-    var rest = cleaned;
-    while (rest.isNotEmpty) {
-      final md = _mdLinkRe.firstMatch(rest);
-      if (md != null && md.start == 0) {
-        spans.add(_linkSpan(md.group(1) ?? 'Ссылка', md.group(2)!));
-        rest = rest.substring(md.end);
-        continue;
-      }
-      if (md != null && md.start > 0) {
-        spans.addAll(_plainSpans(rest.substring(0, md.start)));
-        rest = rest.substring(md.start);
-        continue;
-      }
-      spans.addAll(_plainSpans(rest));
-      break;
+    final photoItems = images
+        .map(
+          (img) => MediaCarouselItem(
+            label: (img['title'] ?? 'Фото').toString(),
+            url: (img['url'] ?? img['thumbnail'] ?? '').toString(),
+          ),
+        )
+        .where((e) => (e.url ?? '').isNotEmpty)
+        .toList();
+
+    final lines = cleaned.split('\n');
+    final widgets = <Widget>[];
+    final buffer = StringBuffer();
+
+    void flushText() {
+      final t = buffer.toString();
+      buffer.clear();
+      if (t.isEmpty) return;
+      widgets.add(
+        SelectableText.rich(
+          TextSpan(style: const TextStyle(height: 1.4), children: _plainSpans(t)),
+        ),
+      );
     }
 
-    return SelectableText.rich(TextSpan(style: const TextStyle(height: 1.4), children: spans));
+    for (final line in lines) {
+      final photo = _photoLineRe.firstMatch(line.trim());
+      if (photo != null && photoItems.isNotEmpty) {
+        flushText();
+        final label = (photo.group(1) ?? 'Фото').trim();
+        widgets.add(
+          InkWell(
+            onTap: () => openMediaCarousel(context, items: photoItems),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Text(
+                '📷 $label',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.primary,
+                  fontWeight: FontWeight.w600,
+                  decoration: TextDecoration.underline,
+                  height: 1.4,
+                ),
+              ),
+            ),
+          ),
+        );
+      } else {
+        if (buffer.isNotEmpty) buffer.writeln();
+        buffer.write(line);
+      }
+    }
+    flushText();
+    if (widgets.isEmpty) return const SizedBox.shrink();
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: widgets);
   }
 
   List<InlineSpan> _plainSpans(String chunk) {
     final spans = <InlineSpan>[];
     var rest = chunk;
     while (rest.isNotEmpty) {
-      final m = _urlRe.firstMatch(rest);
+      final md = _mdLinkRe.firstMatch(rest);
+      final url = _urlRe.firstMatch(rest);
+      final useMd = md != null && (url == null || md.start <= url.start);
+      final m = useMd ? md : url;
       if (m == null) {
         spans.add(TextSpan(text: rest));
         break;
       }
       if (m.start > 0) spans.add(TextSpan(text: rest.substring(0, m.start)));
-      final url = m.group(0)!;
-      spans.add(_linkSpan(url, url));
+      if (useMd) {
+        spans.add(_linkSpan(m.group(1)!, m.group(2)!));
+      } else {
+        final href = m.group(0)!;
+        spans.add(_linkSpan(href, href));
+      }
       rest = rest.substring(m.end);
     }
     return spans;
@@ -149,34 +203,61 @@ class _ImagesRow extends StatelessWidget {
           final thumb = (img['thumbnail'] ?? img['url'] ?? '').toString();
           final url = (img['url'] ?? thumb).toString();
           final title = (img['title'] ?? 'Фото').toString();
-          return GestureDetector(
-            onTap: () => _openPhotoViewer(context, url, title, onOpen),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: thumb.isNotEmpty
-                      ? Image.network(
-                          thumb,
-                          width: 120,
-                          height: 88,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => _imagePlaceholder(),
-                        )
-                      : _imagePlaceholder(),
-                ),
-                const SizedBox(height: 4),
-                SizedBox(
-                  width: 120,
-                  child: Text(
-                    title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 11, color: Colors.black54),
+          return Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: () {
+                final items = images
+                    .map(
+                      (img) => MediaCarouselItem(
+                        label: (img['title'] ?? 'Фото').toString(),
+                        url: (img['url'] ?? img['thumbnail'] ?? '').toString(),
+                      ),
+                    )
+                    .where((e) => (e.url ?? '').isNotEmpty)
+                    .toList();
+                if (items.isEmpty) {
+                  onOpen(url);
+                  return;
+                }
+                final start = items.indexWhere((e) => e.url == url);
+                openMediaCarousel(
+                  context,
+                  items: items,
+                  initialIndex: (start >= 0 ? start : i).clamp(0, items.length - 1),
+                );
+              },
+              borderRadius: BorderRadius.circular(10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: thumb.isNotEmpty
+                        ? Image.network(
+                            thumb,
+                            width: 120,
+                            height: 88,
+                            fit: BoxFit.cover,
+                            errorBuilder: (_, __, ___) => _imagePlaceholder(),
+                          )
+                        : _imagePlaceholder(),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 4),
+                  SizedBox(
+                    width: 120,
+                    child: Text(
+                      title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           );
         },
@@ -190,49 +271,6 @@ class _ImagesRow extends StatelessWidget {
       height: 88,
       color: Colors.black12,
       child: const Icon(Icons.broken_image_outlined),
-    );
-  }
-
-  void _openPhotoViewer(
-    BuildContext context,
-    String url,
-    String title,
-    Future<void> Function(String? url) onOpen,
-  ) {
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => Dialog.fullscreen(
-        child: Stack(
-          children: [
-            InteractiveViewer(
-              child: Center(
-                child: Image.network(
-                  url,
-                  fit: BoxFit.contain,
-                  errorBuilder: (_, __, ___) => const Icon(Icons.broken_image_outlined, size: 64),
-                ),
-              ),
-            ),
-            SafeArea(
-              child: Row(
-                children: [
-                  IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white),
-                    onPressed: () => Navigator.pop(ctx),
-                  ),
-                  Expanded(
-                    child: Text(title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.open_in_new, color: Colors.white),
-                    onPressed: () => onOpen(url),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }
@@ -292,7 +330,10 @@ class _VideoTile extends StatelessWidget {
                   children: [
                     Text(title, maxLines: 2, overflow: TextOverflow.ellipsis),
                     if (meta.isNotEmpty)
-                      Text(meta, style: const TextStyle(fontSize: 11, color: Colors.black54)),
+                      Text(
+                        meta,
+                        style: TextStyle(fontSize: 11, color: Theme.of(context).colorScheme.onSurfaceVariant),
+                      ),
                   ],
                 ),
               ),
