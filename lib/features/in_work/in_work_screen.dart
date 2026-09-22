@@ -340,10 +340,7 @@ class _CarTile extends StatelessWidget {
           ),
         ),
         subtitle: Text(
-          [
-            if (overdue) 'Просрочена',
-            ...subtitleParts.where((s) => s.isNotEmpty),
-          ].join(' · '),
+          subtitleParts.where((s) => s.isNotEmpty).join(' · '),
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(

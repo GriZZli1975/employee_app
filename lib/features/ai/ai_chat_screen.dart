@@ -99,13 +99,49 @@ class _AiChatScreenState extends State<AiChatScreen> {
   Map<String, dynamic>? _context() {
     final order = widget.order;
     if (order == null) return null;
+    final extra = <String, dynamic>{
+      if (order.regNumber != null) 'plate': order.regNumber,
+      if (order.shReason != null) 'sh_reason': order.shReason,
+      if (order.shNote != null) 'sh_note': order.shNote,
+    };
     return {
       if (order.clientId != null) 'client_id': order.clientId,
       if (order.carId != null) 'car_id': order.carId,
       if (order.saleId != null) 'sale_id': order.saleId,
       if (order.carInfo.isNotEmpty) 'car_info': order.carInfo,
-      if (order.regNumber != null) 'extra': {'plate': order.regNumber},
+      if (extra.isNotEmpty) 'extra': extra,
     };
+  }
+
+  /// Промпт для разбора жалоб из ЗН (причина + заметка).
+  String? _complaintsPrompt() {
+    final order = widget.order;
+    if (order == null || !order.hasClientNotes) return null;
+    final car = order.carInfo.isNotEmpty ? order.carInfo : 'авто из ЗН';
+    final plate = order.regNumber ?? '—';
+    final parts = <String>[
+      'Ты помощник механика-диагноста в сервисе.',
+      'Авто: $car, госномер $plate.',
+      'Ниже жалобы и заметки из заказ-наряда (со слов клиента / мастера).',
+      if (order.shReason != null && order.shReason!.isNotEmpty) 'Причина (со слов клиента):\n${order.shReason}',
+      if (order.shNote != null && order.shNote!.isNotEmpty) 'Заметка по ЗН:\n${order.shNote}',
+      '',
+      'Задача: по симптомам подскажи, на что это похоже, типичные причины для этой модели,',
+      'что проверить в первую очередь (короткий чеклист), какие системы/ошибки смотреть,',
+      'на что обратить внимание на подъёмнике. Пиши кратко, по делу, для механика в цеху.',
+      'Если уместно — предложи 1–2 уточняющих вопроса клиенту.',
+    ];
+    return parts.join('\n');
+  }
+
+  Future<void> _askClientComplaints() async {
+    final prompt = _complaintsPrompt();
+    if (prompt == null) return;
+    await _send(
+      preset: prompt,
+      displayText: 'Разбери жалобы клиента по этому авто',
+      forceSearchMode: AiSearchMode.web,
+    );
   }
 
   Future<int?> _employeeId() async {
@@ -118,7 +154,9 @@ class _AiChatScreenState extends State<AiChatScreen> {
 
   Future<void> _send({
     String? preset,
+    String? displayText,
     String? templateId,
+    AiSearchMode? forceSearchMode,
   }) async {
     final text = (preset ?? _input.text).trim();
     if (text.isEmpty || _loading) return;
@@ -127,9 +165,10 @@ class _AiChatScreenState extends State<AiChatScreen> {
       setState(() => _error = 'Нет employee_id — переподключитесь к Stoox');
       return;
     }
+    final shown = (displayText ?? text).trim();
 
     setState(() {
-      _messages.add(AiChatMessage(role: 'user', text: text));
+      _messages.add(AiChatMessage(role: 'user', text: shown));
       if (preset == null) _input.clear();
       _loading = true;
       _error = null;
@@ -138,13 +177,16 @@ class _AiChatScreenState extends State<AiChatScreen> {
     _scrollToEnd();
 
     try {
+      final mode = templateId != null
+          ? 'web'
+          : (forceSearchMode ?? _searchMode).name;
       final res = await BotApi(widget.session).chat(
         message: text,
         employeeId: employeeId,
         employeeName: widget.employeeName,
         conversationId: _conversationId,
         context: _context(),
-        searchMode: templateId != null ? 'web' : _searchMode.name,
+        searchMode: mode,
         templateId: templateId,
       );
       _conversationId = res['conversation_id']?.toString() ?? _conversationId;
@@ -258,26 +300,38 @@ class _AiChatScreenState extends State<AiChatScreen> {
 
   List<Widget> _templateChips() {
     final order = widget.order;
+    final chips = <Widget>[];
+    if (order != null && order.hasClientNotes) {
+      chips.add(
+        ActionChip(
+          avatar: Icon(Icons.healing_outlined, size: 16, color: Theme.of(context).colorScheme.primary),
+          label: const Text('По жалобам клиента', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+          onPressed: _loading ? null : _askClientComplaints,
+        ),
+      );
+    }
     if (order != null && _apiTemplates.isNotEmpty) {
-      return _apiTemplates
-          .map(
-            (t) => ActionChip(
-              avatar: const Icon(Icons.warning_amber_outlined, size: 16),
-              label: Text(t.label, style: const TextStyle(fontSize: 12)),
-              onPressed: _loading ? null : () => _send(preset: t.displayMessage, templateId: t.id),
-            ),
-          )
-          .toList();
+      chips.addAll(
+        _apiTemplates.map(
+          (t) => ActionChip(
+            avatar: const Icon(Icons.warning_amber_outlined, size: 16),
+            label: Text(t.label, style: const TextStyle(fontSize: 12)),
+            onPressed: _loading ? null : () => _send(preset: t.displayMessage, templateId: t.id),
+          ),
+        ),
+      );
+      return chips;
     }
     if (order != null) {
-      return _templatesCarLegacy
-          .map(
-            (t) => ActionChip(
-              label: Text(t, style: const TextStyle(fontSize: 12)),
-              onPressed: _loading ? null : () => _send(preset: t),
-            ),
-          )
-          .toList();
+      chips.addAll(
+        _templatesCarLegacy.map(
+          (t) => ActionChip(
+            label: Text(t, style: const TextStyle(fontSize: 12)),
+            onPressed: _loading ? null : () => _send(preset: t),
+          ),
+        ),
+      );
+      return chips;
     }
     return _templatesGeneral
         .map(
@@ -303,11 +357,27 @@ class _AiChatScreenState extends State<AiChatScreen> {
           if (order != null)
             Material(
               color: theme.colorScheme.surfaceContainerHighest,
-              child: ListTile(
-                dense: true,
-                leading: const Icon(Icons.directions_car_outlined),
-                title: Text(order.regNumber ?? order.saleNumber),
-                subtitle: Text(order.carInfo),
+              child: Column(
+                children: [
+                  ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.directions_car_outlined),
+                    title: Text(order.regNumber ?? order.saleNumber),
+                    subtitle: Text(order.carInfo),
+                  ),
+                  if (order.hasClientNotes)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.tonalIcon(
+                          onPressed: _loading ? null : _askClientComplaints,
+                          icon: const Icon(Icons.healing_outlined),
+                          label: const Text('Спросить ИИ по жалобам клиента'),
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
           _SearchModeBar(
