@@ -44,6 +44,8 @@ class _AiChatScreenState extends State<AiChatScreen> {
   AiSearchMode _searchMode = AiSearchMode.web;
   MediaAuth _mediaAuth = const MediaAuth();
   List<AiChatTemplate> _apiTemplates = const [];
+  /// После первого сообщения шаблоны сворачиваем — больше места под ответ.
+  bool _presetsExpanded = true;
 
   static const _templatesGeneral = [
     'Как провести диагностику подвески — покажи схему',
@@ -172,6 +174,7 @@ class _AiChatScreenState extends State<AiChatScreen> {
       if (preset == null) _input.clear();
       _loading = true;
       _error = null;
+      _presetsExpanded = false;
     });
     _inputFocus.unfocus();
     _scrollToEnd();
@@ -347,6 +350,8 @@ class _AiChatScreenState extends State<AiChatScreen> {
   Widget build(BuildContext context) {
     final order = widget.order;
     final theme = Theme.of(context);
+    final hasMessages = _messages.isNotEmpty;
+    final chips = _templateChips();
 
     return Scaffold(
       appBar: AppBar(
@@ -361,13 +366,21 @@ class _AiChatScreenState extends State<AiChatScreen> {
                 children: [
                   ListTile(
                     dense: true,
-                    leading: const Icon(Icons.directions_car_outlined),
-                    title: Text(order.regNumber ?? order.saleNumber),
-                    subtitle: Text(order.carInfo),
+                    visualDensity: VisualDensity.compact,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
+                    leading: const Icon(Icons.directions_car_outlined, size: 22),
+                    title: Text(
+                      order.regNumber ?? order.saleNumber,
+                      style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+                    ),
+                    subtitle: order.carInfo.isEmpty
+                        ? null
+                        : Text(order.carInfo, maxLines: 1, overflow: TextOverflow.ellipsis),
                   ),
-                  if (order.hasClientNotes)
+                  // Крупная кнопка жалоб — только до первого сообщения.
+                  if (!hasMessages && order.hasClientNotes)
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
+                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
                       child: SizedBox(
                         width: double.infinity,
                         child: FilledButton.tonalIcon(
@@ -383,6 +396,7 @@ class _AiChatScreenState extends State<AiChatScreen> {
           _SearchModeBar(
             hasCar: order != null,
             mode: _searchMode,
+            compact: hasMessages,
             onChanged: (mode) => setState(() => _searchMode = mode),
           ),
           if (_error != null)
@@ -411,11 +425,13 @@ class _AiChatScreenState extends State<AiChatScreen> {
             child: ListView(
               controller: _scroll,
               keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
               children: [
-                _Header(theme: theme, hasCar: order != null),
-                const SizedBox(height: 12),
-                if (_messages.isEmpty) _EmptyHints(hasCar: order != null, hasWeakSpotTemplates: _apiTemplates.isNotEmpty),
+                if (!hasMessages) ...[
+                  _Header(theme: theme, hasCar: order != null),
+                  const SizedBox(height: 12),
+                  _EmptyHints(hasCar: order != null, hasWeakSpotTemplates: _apiTemplates.isNotEmpty),
+                ],
                 ..._messages.asMap().entries.expand((entry) {
                   final index = entry.key;
                   final m = entry.value;
@@ -442,21 +458,22 @@ class _AiChatScreenState extends State<AiChatScreen> {
               ],
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
-            child: Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: _templateChips(),
+          if (chips.isNotEmpty)
+            _PresetsPanel(
+              expanded: !hasMessages || _presetsExpanded,
+              onToggle: hasMessages
+                  ? () => setState(() => _presetsExpanded = !_presetsExpanded)
+                  : null,
+              chips: chips,
             ),
-          ),
           SafeArea(
             top: false,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
+              padding: const EdgeInsets.fromLTRB(8, 2, 8, 8),
               child: Row(
                 children: [
                   IconButton(
+                    visualDensity: VisualDensity.compact,
                     onPressed: _loading ? null : _toggleVoice,
                     icon: Icon(
                       _recording ? Icons.stop_circle_outlined : Icons.mic_none_outlined,
@@ -469,27 +486,29 @@ class _AiChatScreenState extends State<AiChatScreen> {
                       controller: _input,
                       focusNode: _inputFocus,
                       minLines: 1,
-                      maxLines: 4,
+                      maxLines: 3,
                       textInputAction: TextInputAction.send,
                       onSubmitted: _loading ? null : (_) => _send(),
                       decoration: InputDecoration(
-                        hintText: 'Вопрос по авто, осмотру или работам…',
+                        hintText: 'Вопрос…',
+                        isDense: true,
                         filled: true,
                         border: OutlineInputBorder(borderRadius: BorderRadius.circular(20)),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                       ),
                     ),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 4),
                   IconButton.filled(
+                    visualDensity: VisualDensity.compact,
                     onPressed: _loading ? null : () => _send(),
                     icon: _loading
                         ? const SizedBox(
-                            width: 20,
-                            height: 20,
+                            width: 18,
+                            height: 18,
                             child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                           )
-                        : const Icon(Icons.send),
+                        : const Icon(Icons.send, size: 20),
                   ),
                 ],
               ),
@@ -612,56 +631,143 @@ class _EmptyHints extends StatelessWidget {
   }
 }
 
+class _PresetsPanel extends StatelessWidget {
+  const _PresetsPanel({
+    required this.expanded,
+    required this.chips,
+    this.onToggle,
+  });
+
+  final bool expanded;
+  final List<Widget> chips;
+  final VoidCallback? onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    // До первого сообщения — сразу все чипы; после — одна строка «Шаблоны».
+    if (onToggle == null) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+        child: Wrap(spacing: 6, runSpacing: 6, children: chips),
+      );
+    }
+
+    return Material(
+      color: scheme.surfaceContainerLow,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InkWell(
+            onTap: onToggle,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              child: Row(
+                children: [
+                  Icon(
+                    expanded ? Icons.expand_more : Icons.unfold_more,
+                    size: 18,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    expanded ? 'Скрыть шаблоны' : 'Шаблоны и подсказки',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const Spacer(),
+                  if (!expanded)
+                    Text(
+                      '${chips.length}',
+                      style: TextStyle(fontSize: 12, color: scheme.outline),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          if (expanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              child: Wrap(spacing: 6, runSpacing: 6, children: chips),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class _SearchModeBar extends StatelessWidget {
   const _SearchModeBar({
     required this.hasCar,
     required this.mode,
     required this.onChanged,
+    this.compact = false,
   });
 
   final bool hasCar;
   final AiSearchMode mode;
   final ValueChanged<AiSearchMode> onChanged;
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
     if (!hasCar) {
       return Padding(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+        padding: EdgeInsets.fromLTRB(12, compact ? 2 : 6, 12, 2),
         child: Align(
           alignment: Alignment.centerLeft,
           child: Chip(
-            avatar: const Icon(Icons.language, size: 16),
-            label: const Text('Поиск в интернете'),
+            visualDensity: VisualDensity.compact,
+            avatar: const Icon(Icons.language, size: 14),
+            label: const Text('Интернет', style: TextStyle(fontSize: 12)),
+            padding: EdgeInsets.zero,
+            labelPadding: const EdgeInsets.only(right: 8),
           ),
         ),
       );
     }
 
+    final selected = mode == AiSearchMode.auto ? AiSearchMode.car : mode;
+
+    // Одна компактная строка: иконка + короткое имя.
     return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
-      child: SegmentedButton<AiSearchMode>(
-        segments: [
-          if (hasCar)
-            const ButtonSegment(
+      padding: EdgeInsets.fromLTRB(8, compact ? 2 : 6, 8, 2),
+      child: SizedBox(
+        height: 36,
+        child: SegmentedButton<AiSearchMode>(
+          style: ButtonStyle(
+            visualDensity: VisualDensity.compact,
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 6)),
+            textStyle: const WidgetStatePropertyAll(TextStyle(fontSize: 12)),
+          ),
+          showSelectedIcon: false,
+          segments: const [
+            ButtonSegment(
               value: AiSearchMode.car,
-              label: Text('Авто', style: TextStyle(fontSize: 12)),
-              icon: Icon(Icons.directions_car_outlined, size: 16),
+              label: Text('Авто'),
+              icon: Icon(Icons.directions_car_outlined, size: 15),
+              tooltip: 'Данные по авто',
             ),
-          ButtonSegment(
-            value: AiSearchMode.history,
-            label: const Text('История', style: TextStyle(fontSize: 12)),
-            icon: const Icon(Icons.photo_library_outlined, size: 16),
-            enabled: hasCar,
-          ),
-          const ButtonSegment(
-            value: AiSearchMode.web,
-            label: Text('Веб', style: TextStyle(fontSize: 12)),
-            icon: Icon(Icons.language, size: 16),
-          ),
-        ],
-        selected: {mode == AiSearchMode.auto ? AiSearchMode.car : mode},
-        onSelectionChanged: (s) => onChanged(s.first),
+            ButtonSegment(
+              value: AiSearchMode.history,
+              label: Text('История'),
+              icon: Icon(Icons.photo_library_outlined, size: 15),
+              tooltip: 'Фото осмотров',
+            ),
+            ButtonSegment(
+              value: AiSearchMode.web,
+              label: Text('Веб'),
+              icon: Icon(Icons.language, size: 15),
+              tooltip: 'Поиск в интернете',
+            ),
+          ],
+          selected: {selected},
+          onSelectionChanged: (s) => onChanged(s.first),
+        ),
       ),
     );
   }
