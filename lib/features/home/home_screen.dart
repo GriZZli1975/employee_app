@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/app_update.dart';
 import '../../core/session.dart';
 import '../../core/work_order.dart';
 import '../../widgets/main_nav_bar.dart';
@@ -39,6 +40,10 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _loadName();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      AppUpdateChecker.checkAndPrompt(context);
+    });
   }
 
   Future<void> _loadName() async {

@@ -2,28 +2,35 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import 'network_photo.dart';
+
 class MediaCarouselItem {
   const MediaCarouselItem({
     required this.label,
     this.filePath,
     this.url,
+    this.previewUrl,
+    this.mediaId,
   });
 
   final String label;
   final String? filePath;
   final String? url;
+  final String? previewUrl;
+  final String? mediaId;
 }
 
 Future<void> openMediaCarousel(
   BuildContext context, {
   required List<MediaCarouselItem> items,
   int initialIndex = 0,
+  MediaAuth? auth,
 }) {
   if (items.isEmpty) return Future.value();
   return Navigator.of(context, rootNavigator: true).push(
     MaterialPageRoute<void>(
       fullscreenDialog: true,
-      builder: (_) => MediaCarouselScreen(items: items, initialIndex: initialIndex),
+      builder: (_) => MediaCarouselScreen(items: items, initialIndex: initialIndex, auth: auth),
     ),
   );
 }
@@ -33,10 +40,12 @@ class MediaCarouselScreen extends StatefulWidget {
     super.key,
     required this.items,
     this.initialIndex = 0,
+    this.auth,
   });
 
   final List<MediaCarouselItem> items;
   final int initialIndex;
+  final MediaAuth? auth;
 
   @override
   State<MediaCarouselScreen> createState() => _MediaCarouselScreenState();
@@ -116,19 +125,14 @@ class _MediaCarouselScreenState extends State<MediaCarouselScreen> {
     if (item.filePath != null && File(item.filePath!).existsSync()) {
       return Image.file(File(item.filePath!), fit: BoxFit.contain);
     }
-    final url = item.url ?? '';
-    if (url.isEmpty) {
-      return const Icon(Icons.broken_image_outlined, color: Colors.white54, size: 64);
-    }
-    return Image.network(
-      url,
+    return NetworkPhoto(
+      url: item.url,
+      previewUrl: item.previewUrl,
+      mediaId: item.mediaId,
+      auth: widget.auth,
       fit: BoxFit.contain,
-      loadingBuilder: (context, child, progress) {
-        if (progress == null) return child;
-        return const Center(child: CircularProgressIndicator(color: Colors.white));
-      },
-      errorBuilder: (_, __, ___) =>
-          const Icon(Icons.broken_image_outlined, color: Colors.white54, size: 64),
+      preferFull: true,
+      placeholder: const Icon(Icons.broken_image_outlined, color: Colors.white54, size: 64),
     );
   }
 }

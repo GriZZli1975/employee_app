@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
+import '../../core/app_update.dart';
 import '../../core/session.dart';
 import '../../core/stoox_api.dart';
 import '../../core/work_order.dart';
@@ -28,11 +30,21 @@ class PersonalScreenState extends State<PersonalScreen> {
   String? _error;
   StooxBalanceInfo? _balance;
   Map<String, dynamic> _summary = {};
+  String _appVersion = '';
 
   @override
   void initState() {
     super.initState();
+    _loadVersion();
     reload();
+  }
+
+  Future<void> _loadVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (!mounted) return;
+      setState(() => _appVersion = '${info.version} (${info.buildNumber})');
+    } catch (_) {}
   }
 
   Future<void> reload() async {
@@ -120,6 +132,33 @@ class PersonalScreenState extends State<PersonalScreen> {
                         ),
                       ),
                     );
+                  },
+                ),
+                const Divider(height: 1),
+                ListTile(
+                  leading: const Icon(Icons.system_update_outlined),
+                  title: const Text('Проверить обновления'),
+                  subtitle: Text(_appVersion.isEmpty ? 'GitHub Releases' : 'Версия $_appVersion'),
+                  onTap: () async {
+                    final messenger = ScaffoldMessenger.of(context);
+                    messenger.showSnackBar(
+                      const SnackBar(content: Text('Проверяем…'), duration: Duration(seconds: 1)),
+                    );
+                    final info = await AppUpdateChecker.check();
+                    if (!mounted) return;
+                    if (info == null) {
+                      messenger.showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            _appVersion.isEmpty
+                                ? 'Обновлений нет или нет связи с GitHub'
+                                : 'У вас актуальная версия $_appVersion',
+                          ),
+                        ),
+                      );
+                      return;
+                    }
+                    await AppUpdateChecker.prompt(context, info);
                   },
                 ),
                 const Divider(height: 1),

@@ -1,8 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import '../../core/bot_api.dart';
 import '../../core/session.dart';
 import '../../core/work_order.dart';
+import '../../widgets/network_photo.dart';
+import '../capture/voice_recorder.dart';
 import 'ai_chat_models.dart';
 import 'ai_message_bubble.dart';
 
@@ -32,10 +36,14 @@ class _AiChatScreenState extends State<AiChatScreen> {
   final _inputFocus = FocusNode();
   final _scroll = ScrollController();
   final _messages = <AiChatMessage>[];
+  final _recorder = VoiceRecorder();
   String? _conversationId;
   bool _loading = false;
+  bool _recording = false;
   String? _error;
   AiSearchMode _searchMode = AiSearchMode.web;
+  MediaAuth _mediaAuth = const MediaAuth();
+  List<AiChatTemplate> _apiTemplates = const [];
 
   static const _templatesGeneral = [
     'Как провести диагностику подвески — покажи схему',
@@ -43,7 +51,7 @@ class _AiChatScreenState extends State<AiChatScreen> {
     'Как правильно менять передние тормозные колодки — видео',
   ];
 
-  static const _templatesCar = [
+  static const _templatesCarLegacy = [
     'Фото диагностики за сегодня',
     'Результаты осмотра за последний визит',
     'Список работ по текущему ЗН',
@@ -53,10 +61,35 @@ class _AiChatScreenState extends State<AiChatScreen> {
   void initState() {
     super.initState();
     _searchMode = widget.order != null ? AiSearchMode.car : AiSearchMode.web;
+    _loadMediaAuth();
+    _loadApiTemplates();
+  }
+
+  Future<void> _loadMediaAuth() async {
+    try {
+      final api = BotApi(widget.session);
+      final headers = await api.mediaAuthHeaders();
+      final base = await api.baseUrl();
+      if (!mounted) return;
+      setState(() => _mediaAuth = MediaAuth(botBase: base, headers: headers));
+    } catch (_) {}
+  }
+
+  Future<void> _loadApiTemplates() async {
+    final carId = widget.order?.carId;
+    if (carId == null) return;
+    try {
+      final raw = await BotApi(widget.session).fetchTemplates(carId: carId);
+      if (!mounted) return;
+      setState(() {
+        _apiTemplates = raw.map(AiChatTemplate.fromJson).whereType<AiChatTemplate>().toList();
+      });
+    } catch (_) {}
   }
 
   @override
   void dispose() {
+    _recorder.dispose();
     _inputFocus.dispose();
     _input.dispose();
     _scroll.dispose();
@@ -83,7 +116,10 @@ class _AiChatScreenState extends State<AiChatScreen> {
     return raw == null ? null : int.tryParse(raw);
   }
 
-  Future<void> _send([String? preset]) async {
+  Future<void> _send({
+    String? preset,
+    String? templateId,
+  }) async {
     final text = (preset ?? _input.text).trim();
     if (text.isEmpty || _loading) return;
     final employeeId = await _employeeId();
@@ -108,23 +144,54 @@ class _AiChatScreenState extends State<AiChatScreen> {
         employeeName: widget.employeeName,
         conversationId: _conversationId,
         context: _context(),
-        searchMode: _searchMode.name,
+        searchMode: templateId != null ? 'web' : _searchMode.name,
+        templateId: templateId,
       );
       _conversationId = res['conversation_id']?.toString() ?? _conversationId;
       final reply = res['reply'];
-      var replyText = '';
-      var attachments = <AiChatAttachment>[];
-      if (reply is Map) {
-        replyText = reply['content']?.toString() ?? reply['text']?.toString() ?? '';
-        attachments = AiChatMessage.parseReply(reply);
+      final rawReplyText = reply is Map
+          ? (reply['content'] ?? reply['text'] ?? '').toString()
+          : '';
+      var replyText = AiChatMessage.stripQuickRepliesBlock(rawReplyText);
+      var attachments = AiChatMessage.parseReply(reply);
+      var quickReplies = AiQuickReply.parseList(res['quick_replies']);
+      if (quickReplies.isEmpty && rawReplyText.isNotEmpty) {
+        quickReplies = AiChatMessage.parseEmbeddedQuickReplies(rawReplyText);
+      }
+
+      if (AiChatMessage.looksLikeInspectionQuery(text)) {
+        final report = res['inspection_report'] ?? (reply is Map ? reply['inspection_report'] : null);
+        final reportText = AiChatMessage.formatInspectionReport(report);
+        if (reportText.isNotEmpty) {
+          final llm = replyText.trim();
+          replyText = reportText;
+          if (llm.isNotEmpty && llm.length > 40 && !reportText.contains(llm.substring(0, 40))) {
+            replyText = '$reportText\n\n$llm';
+          }
+        }
+        final inspectionMsg = res['inspection_message'];
+        if (inspectionMsg != null) {
+          final merged = <AiChatAttachment>[];
+          final seen = <String>{};
+          for (final a in [...AiChatMessage.parseReply(inspectionMsg), ...attachments]) {
+            final key = '${a.type}:${a.mediaId ?? a.url}';
+            if (seen.add(key)) merged.add(a);
+          }
+          attachments = merged;
+        }
       }
       if (replyText.isEmpty) replyText = res['text']?.toString() ?? 'Пустой ответ';
       if (!mounted) return;
-      setState(
-        () => _messages.add(
-          AiChatMessage(role: 'assistant', text: replyText, attachments: attachments),
-        ),
-      );
+      setState(() {
+        _messages.add(
+          AiChatMessage(
+            role: 'assistant',
+            text: replyText,
+            attachments: attachments,
+            quickReplies: quickReplies,
+          ),
+        );
+      });
     } on BotApiException catch (e) {
       if (mounted) setState(() => _error = e.toString());
     } catch (e) {
@@ -133,6 +200,49 @@ class _AiChatScreenState extends State<AiChatScreen> {
       if (mounted) setState(() => _loading = false);
       _scrollToEnd();
     }
+  }
+
+  Future<void> _toggleVoice() async {
+    if (_loading) return;
+    if (_recording) {
+      final path = await _recorder.stop();
+      setState(() => _recording = false);
+      if (path == null || path.isEmpty) return;
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+      try {
+        final transcript = await BotApi(widget.session).transcribeFile(
+          File(path),
+          filename: 'voice.wav',
+        );
+        if (!mounted) return;
+        if (transcript.isEmpty) {
+          setState(() => _error = 'Не удалось распознать речь');
+          return;
+        }
+        await _send(preset: transcript);
+      } on BotApiException catch (e) {
+        if (mounted) setState(() => _error = e.toString());
+      } catch (e) {
+        if (mounted) setState(() => _error = e.toString());
+      } finally {
+        if (mounted) setState(() => _loading = false);
+      }
+      return;
+    }
+
+    final ok = await _recorder.start();
+    if (!mounted) return;
+    if (!ok) {
+      setState(() => _error = 'Нет доступа к микрофону');
+      return;
+    }
+    setState(() {
+      _recording = true;
+      _error = null;
+    });
   }
 
   void _scrollToEnd() {
@@ -144,6 +254,39 @@ class _AiChatScreenState extends State<AiChatScreen> {
         curve: Curves.easeOut,
       );
     });
+  }
+
+  List<Widget> _templateChips() {
+    final order = widget.order;
+    if (order != null && _apiTemplates.isNotEmpty) {
+      return _apiTemplates
+          .map(
+            (t) => ActionChip(
+              avatar: const Icon(Icons.warning_amber_outlined, size: 16),
+              label: Text(t.label, style: const TextStyle(fontSize: 12)),
+              onPressed: _loading ? null : () => _send(preset: t.displayMessage, templateId: t.id),
+            ),
+          )
+          .toList();
+    }
+    if (order != null) {
+      return _templatesCarLegacy
+          .map(
+            (t) => ActionChip(
+              label: Text(t, style: const TextStyle(fontSize: 12)),
+              onPressed: _loading ? null : () => _send(preset: t),
+            ),
+          )
+          .toList();
+    }
+    return _templatesGeneral
+        .map(
+          (t) => ActionChip(
+            label: Text(t, style: const TextStyle(fontSize: 12)),
+            onPressed: _loading ? null : () => _send(preset: t),
+          ),
+        )
+        .toList();
   }
 
   @override
@@ -180,6 +323,20 @@ class _AiChatScreenState extends State<AiChatScreen> {
                 child: Text(_error!),
               ),
             ),
+          if (_recording)
+            Material(
+              color: theme.colorScheme.primaryContainer,
+              child: const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+                child: Row(
+                  children: [
+                    Icon(Icons.mic, color: Colors.red),
+                    SizedBox(width: 8),
+                    Text('Запись… нажмите микрофон ещё раз, чтобы отправить'),
+                  ],
+                ),
+              ),
+            ),
           Expanded(
             child: ListView(
               controller: _scroll,
@@ -188,39 +345,55 @@ class _AiChatScreenState extends State<AiChatScreen> {
               children: [
                 _Header(theme: theme, hasCar: order != null),
                 const SizedBox(height: 12),
-                if (_messages.isEmpty) _EmptyHints(hasCar: order != null),
-                ..._messages.map(
-                  (m) => AiMessageBubble(
-                    message: m,
-                    onOpenUrl: (url) => openExternalUrl(context, url),
-                  ),
-                ),
+                if (_messages.isEmpty) _EmptyHints(hasCar: order != null, hasWeakSpotTemplates: _apiTemplates.isNotEmpty),
+                ..._messages.asMap().entries.expand((entry) {
+                  final index = entry.key;
+                  final m = entry.value;
+                  final isLastAssistant =
+                      !m.isUser && index == _messages.lastIndexWhere((x) => !x.isUser);
+                  return [
+                    AiMessageBubble(
+                      message: m,
+                      auth: _mediaAuth,
+                      onOpenUrl: (url) => openExternalUrl(context, url),
+                    ),
+                    if (!m.isUser && m.quickReplies.isNotEmpty && isLastAssistant)
+                      _QuickRepliesBar(
+                        replies: m.quickReplies,
+                        loading: _loading,
+                        onTap: (qr) => _send(
+                          preset: qr.message,
+                          templateId: qr.templateId ?? 'weak_spots_followup',
+                        ),
+                      ),
+                  ];
+                }),
                 if (_loading) const _LoadingRow(),
               ],
             ),
           ),
-          if (_messages.isEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
-              child: Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: (order != null ? _templatesCar : _templatesGeneral)
-                    .map(
-                      (t) => ActionChip(
-                        label: Text(t, style: const TextStyle(fontSize: 12)),
-                        onPressed: _loading ? null : () => _send(t),
-                      ),
-                    )
-                    .toList(),
-              ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: _templateChips(),
             ),
+          ),
           SafeArea(
             top: false,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
               child: Row(
                 children: [
+                  IconButton(
+                    onPressed: _loading ? null : _toggleVoice,
+                    icon: Icon(
+                      _recording ? Icons.stop_circle_outlined : Icons.mic_none_outlined,
+                      color: _recording ? Colors.red : null,
+                    ),
+                    tooltip: _recording ? 'Остановить и отправить' : 'Голосовой вопрос',
+                  ),
                   Expanded(
                     child: TextField(
                       controller: _input,
@@ -258,6 +431,39 @@ class _AiChatScreenState extends State<AiChatScreen> {
   }
 }
 
+class _QuickRepliesBar extends StatelessWidget {
+  const _QuickRepliesBar({
+    required this.replies,
+    required this.loading,
+    required this.onTap,
+  });
+
+  final List<AiQuickReply> replies;
+  final bool loading;
+  final ValueChanged<AiQuickReply> onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    if (replies.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(left: 8, bottom: 10, top: 4),
+      child: Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        children: replies
+            .map(
+              (qr) => ActionChip(
+                avatar: const Icon(Icons.subdirectory_arrow_right, size: 16),
+                label: Text(qr.label, style: const TextStyle(fontSize: 12)),
+                onPressed: loading ? null : () => onTap(qr),
+              ),
+            )
+            .toList(),
+      ),
+    );
+  }
+}
+
 class _Header extends StatelessWidget {
   const _Header({required this.theme, required this.hasCar});
 
@@ -289,7 +495,7 @@ class _Header extends StatelessWidget {
               ),
               Text(
                 hasCar
-                    ? 'Выберите режим: авто, история осмотров или веб'
+                    ? 'Шаблоны «слабые места» + уточнения после ответа'
                     : 'Справочник и поиск по ремонту',
                 style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.onSurfaceVariant),
               ),
@@ -302,9 +508,10 @@ class _Header extends StatelessWidget {
 }
 
 class _EmptyHints extends StatelessWidget {
-  const _EmptyHints({required this.hasCar});
+  const _EmptyHints({required this.hasCar, required this.hasWeakSpotTemplates});
 
   final bool hasCar;
+  final bool hasWeakSpotTemplates;
 
   @override
   Widget build(BuildContext context) {
@@ -321,12 +528,11 @@ class _EmptyHints extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             Text(
-              hasCar
-                  ? '«Авто» — данные по машине и ЗН. '
-                      '«История» — фото/видео осмотров и диагностик. '
-                      '«Веб» — видео, схемы и статьи из интернета.'
-                  : 'Режим «Веб» — поиск видео, схем и статей. '
-                      '«История» доступна при открытии чата из карточки авто.',
+              hasCar && hasWeakSpotTemplates
+                  ? 'Нажмите «Слабые места этого авто» — ИИ найдёт типичные проблемы модели в интернете и предложит уточнения (рулевое, подвеска…). Микрофон — голосовой вопрос.'
+                  : hasCar
+                      ? '«Авто» — данные по машине. «История» — фото осмотров. «Веб» — поиск в интернете.'
+                      : 'Режим «Веб» — поиск видео, схем и статей.',
               style: const TextStyle(height: 1.4),
             ),
           ],

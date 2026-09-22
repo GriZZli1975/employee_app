@@ -33,6 +33,19 @@ class InWorkScreenState extends State<InWorkScreen> {
     reload();
   }
 
+  void _patchOrder(StooxWorkOrder updated) {
+    final key = StooxApi.basketMergeKey(updated.raw);
+    setState(() {
+      _items = [
+        for (final item in _items)
+          if (item is Map && StooxApi.basketMergeKey(Map<String, dynamic>.from(item)) == key)
+            updated.raw
+          else
+            item,
+      ];
+    });
+  }
+
   Future<void> reload() async {
     setState(() {
       _loading = true;
@@ -46,6 +59,7 @@ class InWorkScreenState extends State<InWorkScreen> {
         sales: dash.sales,
         warranty: dash.warranty,
         employeeSummary: dash.summary,
+        openOnly: true,
       );
       if (mounted) {
         setState(() {
@@ -150,6 +164,7 @@ class InWorkScreenState extends State<InWorkScreen> {
                     employeeSummary: _employeeSummary,
                     sales: _sales,
                     warranty: _warranty,
+                    onOrderUpdated: _patchOrder,
                   ),
                 ),
               );

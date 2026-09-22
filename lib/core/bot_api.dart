@@ -34,6 +34,19 @@ class BotApi {
     };
   }
 
+  Future<String> baseUrl() => _base();
+
+  Future<Map<String, String>> mediaAuthHeaders() async {
+    final host = await session.getBaseUrl();
+    final pcKey = await session.getPcKey() ?? '';
+    final apiKey = await session.getApiKey();
+    return {
+      'X-Stoox-Host': host,
+      'X-Pc-Key': pcKey,
+      'X-Stoox-Key': apiKey,
+    };
+  }
+
   Future<String> _base() async {
     final url = EmployeeSession.normalizeBotUrl(await session.getBotUrl());
     if (url.isEmpty) {
@@ -129,6 +142,7 @@ class BotApi {
     String? conversationId,
     Map<String, dynamic>? context,
     String? searchMode,
+    String? templateId,
   }) async {
     final body = <String, dynamic>{
       'employee_id': employeeId,
@@ -136,6 +150,7 @@ class BotApi {
       if (employeeName != null && employeeName.isNotEmpty) 'employee_name': employeeName,
       if (conversationId != null && conversationId.isNotEmpty) 'conversation_id': conversationId,
       if (searchMode != null && searchMode.isNotEmpty) 'search_mode': searchMode,
+      if (templateId != null && templateId.isNotEmpty) 'template_id': templateId,
       'context': ?context,
     };
     final res = await http
@@ -146,6 +161,36 @@ class BotApi {
         )
         .timeout(const Duration(seconds: 120));
     return _decode(res);
+  }
+
+  Future<List<Map<String, dynamic>>> fetchTemplates({int? carId}) async {
+    final query = carId != null ? '?car_id=$carId' : '';
+    final res = await http
+        .get(
+          Uri.parse('${await _base()}/api/ai/templates$query'),
+          headers: await _headers(),
+        )
+        .timeout(const Duration(seconds: 20));
+    final data = _decode(res);
+    final raw = data['templates'];
+    if (raw is! List) return const [];
+    return raw.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+  }
+
+  Future<String> transcribeFile(File file, {String filename = 'voice.wav'}) async {
+    final bytes = await file.readAsBytes();
+    final res = await http
+        .post(
+          Uri.parse('${await _base()}/api/ai/transcribe'),
+          headers: await _headers(),
+          body: jsonEncode({
+            'file_base64': base64Encode(bytes),
+            'filename': filename,
+          }),
+        )
+        .timeout(const Duration(seconds: 120));
+    final data = _decode(res);
+    return (data['transcript'] ?? '').toString().trim();
   }
 
   Map<String, dynamic> _decode(http.Response res) {

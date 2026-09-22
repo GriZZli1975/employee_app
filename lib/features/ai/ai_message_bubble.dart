@@ -4,6 +4,7 @@ import 'package:just_audio/just_audio.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../widgets/media_carousel.dart';
+import '../../widgets/network_photo.dart';
 import 'ai_chat_models.dart';
 
 class AiMessageBubble extends StatelessWidget {
@@ -11,10 +12,26 @@ class AiMessageBubble extends StatelessWidget {
     super.key,
     required this.message,
     required this.onOpenUrl,
+    this.auth,
   });
 
   final AiChatMessage message;
   final Future<void> Function(String? url) onOpenUrl;
+  final MediaAuth? auth;
+
+  List<MediaCarouselItem> _photoItems() {
+    return message.images
+        .map(
+          (img) => MediaCarouselItem(
+            label: (img['title'] ?? 'Фото').toString(),
+            url: (img['url'] ?? img['thumbnail'] ?? '').toString(),
+            previewUrl: (img['thumbnail'] ?? '').toString(),
+            mediaId: img['media_id']?.toString(),
+          ),
+        )
+        .where((e) => (e.url ?? '').isNotEmpty || (e.mediaId ?? '').isNotEmpty)
+        .toList();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -23,6 +40,7 @@ class AiMessageBubble extends StatelessWidget {
     final bg = isUser
         ? Theme.of(context).colorScheme.primaryContainer
         : Theme.of(context).colorScheme.surfaceContainerHighest;
+    final photos = _photoItems();
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 12),
@@ -44,12 +62,14 @@ class AiMessageBubble extends StatelessWidget {
             child: _RichMessageText(
               text: message.text,
               images: message.images,
+              photoItems: photos,
+              auth: auth,
               onLinkTap: onOpenUrl,
             ),
           ),
           if (!isUser && message.images.isNotEmpty) ...[
             const SizedBox(height: 8),
-            _ImagesRow(images: message.images, onOpen: onOpenUrl),
+            _ImagesRow(images: message.images, items: photos, auth: auth, onOpen: onOpenUrl),
           ],
           if (!isUser && message.videos.isNotEmpty) ...[
             const SizedBox(height: 8),
@@ -57,7 +77,7 @@ class AiMessageBubble extends StatelessWidget {
           ],
           if (!isUser && message.voices.isNotEmpty) ...[
             const SizedBox(height: 8),
-            ...message.voices.map((v) => _VoiceTile(attachment: v, onOpenUrl: onOpenUrl)),
+            ...message.voices.map((v) => _VoiceTile(attachment: v, auth: auth, onOpenUrl: onOpenUrl)),
           ],
           if (!isUser && message.sources.isNotEmpty) ...[
             const SizedBox(height: 8),
@@ -74,11 +94,15 @@ class _RichMessageText extends StatelessWidget {
     required this.text,
     required this.onLinkTap,
     this.images = const [],
+    this.photoItems = const [],
+    this.auth,
   });
 
   final String text;
   final Future<void> Function(String? url) onLinkTap;
   final List<Map<String, dynamic>> images;
+  final List<MediaCarouselItem> photoItems;
+  final MediaAuth? auth;
 
   static final _urlRe = RegExp(r'https?://[^\s\]\)<>"]+', caseSensitive: false);
   static final _mdLinkRe = RegExp(r'\[([^\]]+)\]\((https?://[^)]+)\)');
@@ -94,15 +118,19 @@ class _RichMessageText extends StatelessWidget {
     cleaned = cleaned.replaceAll(RegExp(r'\n{3,}'), '\n\n').trim();
     if (cleaned.isEmpty) return const SizedBox.shrink();
 
-    final photoItems = images
-        .map(
-          (img) => MediaCarouselItem(
-            label: (img['title'] ?? 'Фото').toString(),
-            url: (img['url'] ?? img['thumbnail'] ?? '').toString(),
-          ),
-        )
-        .where((e) => (e.url ?? '').isNotEmpty)
-        .toList();
+    final items = photoItems.isNotEmpty
+        ? photoItems
+        : images
+            .map(
+              (img) => MediaCarouselItem(
+                label: (img['title'] ?? 'Фото').toString(),
+                url: (img['url'] ?? img['thumbnail'] ?? '').toString(),
+                previewUrl: (img['thumbnail'] ?? '').toString(),
+                mediaId: img['media_id']?.toString(),
+              ),
+            )
+            .where((e) => (e.url ?? '').isNotEmpty || (e.mediaId ?? '').isNotEmpty)
+            .toList();
 
     final lines = cleaned.split('\n');
     final widgets = <Widget>[];
@@ -121,12 +149,12 @@ class _RichMessageText extends StatelessWidget {
 
     for (final line in lines) {
       final photo = _photoLineRe.firstMatch(line.trim());
-      if (photo != null && photoItems.isNotEmpty) {
+      if (photo != null && items.isNotEmpty) {
         flushText();
         final label = (photo.group(1) ?? 'Фото').trim();
         widgets.add(
           InkWell(
-            onTap: () => openMediaCarousel(context, items: photoItems),
+            onTap: () => openMediaCarousel(context, items: items, auth: auth),
             child: Padding(
               padding: const EdgeInsets.symmetric(vertical: 2),
               child: Text(
@@ -185,10 +213,17 @@ class _RichMessageText extends StatelessWidget {
 }
 
 class _ImagesRow extends StatelessWidget {
-  const _ImagesRow({required this.images, required this.onOpen});
+  const _ImagesRow({
+    required this.images,
+    required this.items,
+    required this.onOpen,
+    this.auth,
+  });
 
   final List<Map<String, dynamic>> images;
+  final List<MediaCarouselItem> items;
   final Future<void> Function(String? url) onOpen;
+  final MediaAuth? auth;
 
   @override
   Widget build(BuildContext context) {
@@ -200,31 +235,25 @@ class _ImagesRow extends StatelessWidget {
         separatorBuilder: (_, __) => const SizedBox(width: 8),
         itemBuilder: (context, i) {
           final img = images[i];
-          final thumb = (img['thumbnail'] ?? img['url'] ?? '').toString();
-          final url = (img['url'] ?? thumb).toString();
+          final url = (img['url'] ?? img['thumbnail'] ?? '').toString();
           final title = (img['title'] ?? 'Фото').toString();
           return Material(
             color: Colors.transparent,
             child: InkWell(
               onTap: () {
-                final items = images
-                    .map(
-                      (img) => MediaCarouselItem(
-                        label: (img['title'] ?? 'Фото').toString(),
-                        url: (img['url'] ?? img['thumbnail'] ?? '').toString(),
-                      ),
-                    )
-                    .where((e) => (e.url ?? '').isNotEmpty)
-                    .toList();
                 if (items.isEmpty) {
                   onOpen(url);
                   return;
                 }
-                final start = items.indexWhere((e) => e.url == url);
+                final mediaId = img['media_id']?.toString();
+                final start = items.indexWhere(
+                  (e) => (mediaId != null && e.mediaId == mediaId) || e.url == url,
+                );
                 openMediaCarousel(
                   context,
                   items: items,
                   initialIndex: (start >= 0 ? start : i).clamp(0, items.length - 1),
+                  auth: auth,
                 );
               },
               borderRadius: BorderRadius.circular(10),
@@ -233,15 +262,16 @@ class _ImagesRow extends StatelessWidget {
                 children: [
                   ClipRRect(
                     borderRadius: BorderRadius.circular(10),
-                    child: thumb.isNotEmpty
-                        ? Image.network(
-                            thumb,
-                            width: 120,
-                            height: 88,
-                            fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => _imagePlaceholder(),
-                          )
-                        : _imagePlaceholder(),
+                    child: NetworkPhoto(
+                      url: url,
+                      previewUrl: (img['thumbnail'] ?? '').toString(),
+                      mediaId: img['media_id']?.toString(),
+                      auth: auth,
+                      width: 120,
+                      height: 88,
+                      fit: BoxFit.cover,
+                      placeholder: _imagePlaceholder(),
+                    ),
                   ),
                   const SizedBox(height: 4),
                   SizedBox(
@@ -389,10 +419,11 @@ class _SourcesList extends StatelessWidget {
 }
 
 class _VoiceTile extends StatefulWidget {
-  const _VoiceTile({required this.attachment, required this.onOpenUrl});
+  const _VoiceTile({required this.attachment, required this.onOpenUrl, this.auth});
 
   final AiChatAttachment attachment;
   final Future<void> Function(String? url) onOpenUrl;
+  final MediaAuth? auth;
 
   @override
   State<_VoiceTile> createState() => _VoiceTileState();
@@ -427,7 +458,14 @@ class _VoiceTileState extends State<_VoiceTile> {
     setState(() => _loading = true);
     try {
       if (_player.processingState == ProcessingState.idle) {
-        await _player.setUrl(widget.attachment.url);
+        final id = widget.attachment.mediaId;
+        final auth = widget.auth;
+        final proxy = (id != null && id.isNotEmpty) ? auth?.proxyUrl(id) : null;
+        if (proxy != null && auth != null && auth.canProxy) {
+          await _player.setUrl(proxy, headers: auth.headers);
+        } else {
+          await _player.setUrl(widget.attachment.url);
+        }
       }
       await _player.play();
     } catch (_) {

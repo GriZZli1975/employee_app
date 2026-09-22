@@ -80,6 +80,7 @@ class StooxApi {
     Map<String, dynamic>? employeeSummary,
     DateTime? dateFrom,
     DateTime? dateTo,
+    bool openOnly = false,
   }) async {
     var items = List<dynamic>.from(baskets);
     List<dynamic> workOrders = [];
@@ -94,6 +95,7 @@ class StooxApi {
           dateTo: dateTo,
         );
         if (workOrders.isNotEmpty) {
+          // Только корзины/ЗН — не sales (закрытые продажи раздувают «В работе»).
           items = mergeBasketLists(items, workOrders);
         }
       } on StooxApiException {
@@ -108,9 +110,15 @@ class StooxApi {
       items,
     ];
 
-    return items.map((item) {
+    final enriched = items.map((item) {
       if (item is! Map) return item;
       return StooxWorkOrder(Map<String, dynamic>.from(item)).enrichFromCatalogs(catalogs).raw;
+    }).toList();
+
+    if (!openOnly) return enriched;
+    return enriched.where((item) {
+      if (item is! Map) return false;
+      return StooxWorkOrder(Map<String, dynamic>.from(item)).isOpen;
     }).toList();
   }
 
@@ -123,13 +131,13 @@ class StooxApi {
         continue;
       }
       final map = Map<String, dynamic>.from(item);
-      final key = _basketMergeKey(map);
+      final key = basketMergeKey(map);
       if (seen.add(key)) out.add(map);
     }
     return out;
   }
 
-  static String _basketMergeKey(Map<String, dynamic> map) {
+  static String basketMergeKey(Map<String, dynamic> map) {
     final id = map['id'] ?? map['sale_id'];
     if (id != null && id.toString().trim().isNotEmpty) {
       return 'id:${id.toString().trim()}';
@@ -139,20 +147,19 @@ class StooxApi {
     return 'hash:${map.hashCode}';
   }
 
+  /// Каталог открытых/текущих ЗН из MCP: только `baskets` (не `sales`/`warranty`).
   static List<dynamic> _extractWorkOrders(Map<String, dynamic> payload) {
     for (final key in [
+      'baskets',
       'work_orders',
       'orders',
-      'sales',
-      'baskets',
-      'warranty',
       'items',
       'data',
     ]) {
       final list = StooxApiLists.extract(payload[key]);
       if (list.isNotEmpty) return list;
     }
-    return StooxApiLists.extract(payload);
+    return const [];
   }
 
   Future<String?> fetchBotBaseUrl() async {
@@ -225,6 +232,9 @@ class StooxApi {
   }
 
   /// Отметка работы в корзине: `to_workshop` 1 = сделано / в цехе, 0 = снять.
+  ///
+  /// Маршрут живёт в **outer** API (`/outer/api/v1/pc_bot/update_work`).
+  /// На части копий Stoox (например fo.stoox.ru) его ещё нет — будет явная 404.
   Future<void> updateBasketWork({
     required int basketWorkId,
     required bool toWorkshop,
@@ -238,6 +248,9 @@ class StooxApi {
       throw StooxApiException(401, 'Отсканируйте QR-ключ сотрудника');
     }
     final apiKey = await session.getApiKey();
+    if (apiKey.isEmpty) {
+      throw StooxApiException(401, 'Нет ключа компании');
+    }
     final headers = {
       'Accept': 'application/json',
       'Content-Type': 'application/json',
@@ -245,32 +258,47 @@ class StooxApi {
       'key': apiKey,
       'Key': apiKey,
     };
+    final flag = toWorkshop ? '1' : '0';
     final query = {
       'basket_work_id': '$basketWorkId',
-      'to_workshop': toWorkshop ? '1' : '0',
+      'to_workshop': flag,
     };
+    final body = jsonEncode({
+      'basket_work_id': basketWorkId,
+      'to_workshop': toWorkshop ? 1 : 0,
+    });
     StooxApiException? last;
-    for (final path in ['/api/v1/pc_bot/update_work', '/outer/api/v1/pc_bot/update_work']) {
+    // Сначала outer — на test.f-auto этот путь есть; без /outer на fo отдаёт HTML/404 SPA.
+    for (final path in ['/outer/api/v1/pc_bot/update_work', '/api/v1/pc_bot/update_work']) {
       final uri = Uri.parse('$origin$path').replace(queryParameters: query);
       try {
-        final res = await http.post(uri, headers: headers).timeout(const Duration(seconds: 20));
+        final res = await http.post(uri, headers: headers, body: body).timeout(const Duration(seconds: 20));
+        final snippet = res.body.trim();
         if (res.statusCode >= 400) {
           last = StooxApiException(res.statusCode, _extractError(res.body));
           if (res.statusCode == 404) continue;
           throw last;
         }
-        if (res.body.isNotEmpty) {
-          try {
-            final parsed = jsonDecode(res.body);
-            if (parsed is Map && (parsed['success'] == false || parsed['error'] != null)) {
+        // Stoox часто отвечает 200 без тела — это успешное сохранение, не ошибка.
+        if (snippet.isEmpty) return;
+        if (snippet.startsWith('<') || snippet.toLowerCase().contains('<html')) {
+          last = StooxApiException(res.statusCode, 'Stoox вернул HTML вместо API ($path)');
+          continue;
+        }
+        try {
+          final parsed = jsonDecode(snippet);
+          if (parsed is Map) {
+            if (parsed['success'] == false || parsed['error'] != null) {
               throw StooxApiException(
                 res.statusCode,
                 parsed['error']?.toString() ?? parsed['message']?.toString() ?? 'Не удалось обновить работу',
               );
             }
-          } catch (e) {
-            if (e is StooxApiException) rethrow;
           }
+        } on StooxApiException {
+          rethrow;
+        } on FormatException {
+          throw StooxApiException(res.statusCode, 'Stoox ответил не JSON: ${snippet.length > 80 ? snippet.substring(0, 80) : snippet}');
         }
         return;
       } on StooxApiException {
@@ -279,7 +307,11 @@ class StooxApi {
         last = StooxApiException(0, e.toString());
       }
     }
-    throw last ?? StooxApiException(0, 'Не удалось обновить работу');
+    throw last ??
+        StooxApiException(
+          404,
+          'На $origin нет /outer/api/v1/pc_bot/update_work — выкатите этот метод в Stoox (на test он уже есть).',
+        );
   }
 
   Future<Map<String, dynamic>> _mcpCall({

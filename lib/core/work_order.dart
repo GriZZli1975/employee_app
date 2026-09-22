@@ -24,6 +24,22 @@ class StooxWorkOrder {
   int? get carId => _int(raw['car_id'] ?? raw['carId']);
   int? get saleId => _int(raw['sale_id'] ?? raw['id'] ?? raw['saleId']);
 
+  /// Открытый ЗН: `closed` = 0 / false / нет поля. Закрытый — не в «В работе».
+  bool get isOpen {
+    final c = raw['closed'];
+    if (c == null) return true;
+    if (c == false || c == 0 || c == '0') return true;
+    if (c is num) return c == 0;
+    final s = c.toString().trim().toLowerCase();
+    return s.isEmpty || s == 'false' || s == '0';
+  }
+
+  StooxWorkOrder withWorks(List<StooxLineItem> works) {
+    final map = Map<String, dynamic>.from(raw);
+    map['works'] = works.map((w) => Map<String, dynamic>.from(w.raw)).toList();
+    return StooxWorkOrder(map);
+  }
+
   num? get totalSum {
     final v = raw['sum'] ?? raw['appraisal'];
     if (v is num) return v;
@@ -169,6 +185,10 @@ class StooxWorkOrder {
       for (final entry in value.entries) {
         if (entry.value is! Map) continue;
         final map = Map<String, dynamic>.from(entry.value as Map);
+        // Ключ хеша MCP — это basket_work_id; внутренний id часто work_id из каталога.
+        if (int.tryParse(entry.key.toString()) != null) {
+          map['basket_work_id'] = map['basket_work_id'] ?? entry.key;
+        }
         map.putIfAbsent('id', () => entry.key);
         catalog.add(StooxLineItem(map));
         if (int.tryParse(entry.key.toString()) != null) numericKeys += 1;

@@ -4,6 +4,14 @@
 
 Flutter (Android + iOS). Вход только через Stoox: хост, ключ компании и PC-ключ (QR или вставка). Медиа осмотра и диагностики уходят в Yandex через этого бота — `WEBHOOK_SECRET` на телефон не кладётся.
 
+## Обновления приложения
+
+При старте после входа приложение смотрит **GitHub Releases** репозитория `employee_app` и предлагает скачать новый APK, если версия новее.
+
+Полный процесс (сборка → tag → APK → release): **[RELEASE.md](RELEASE.md)**.
+
+Кратко: поднять `version` в `pubspec.yaml` → `flutter build apk --release` → Release с tag `v1.0.14+16` и прикреплённым `.apk`.
+
 ## Сборка
 
 Нужен Flutter SDK (`C:\flutter` или свой PATH).
@@ -12,6 +20,13 @@ Flutter (Android + iOS). Вход только через Stoox: хост, кл�
 cd mobile/stoox_employee_app
 flutter pub get
 flutter run
+```
+
+Release APK:
+
+```bash
+flutter build apk --release
+# → build/app/outputs/flutter-apk/app-release.apk
 ```
 
 ## Вход

@@ -25,6 +25,7 @@ class WorkOrderScreen extends StatefulWidget {
 
 class _WorkOrderScreenState extends State<WorkOrderScreen> {
   late List<StooxLineItem> _works;
+  bool _dirty = false;
 
   @override
   void initState() {
@@ -33,6 +34,12 @@ class _WorkOrderScreenState extends State<WorkOrderScreen> {
   }
 
   bool get _canMark => widget.allowMarkDone && widget.session != null;
+
+  StooxWorkOrder get _currentOrder => widget.order.withWorks(_works);
+
+  void _popWithOrder() {
+    Navigator.of(context).pop(_dirty ? _currentOrder : null);
+  }
 
   Future<void> _setWorkshop(StooxLineItem item, bool toWorkshop) async {
     final id = item.basketWorkId;
@@ -43,6 +50,7 @@ class _WorkOrderScreenState extends State<WorkOrderScreen> {
     await StooxApi(session).updateBasketWork(basketWorkId: id, toWorkshop: toWorkshop);
     if (!mounted) return;
     setState(() {
+      _dirty = true;
       _works = [
         for (final w in _works)
           w.basketWorkId == id ? w.withToWorkshop(toWorkshop) : w,
@@ -52,10 +60,19 @@ class _WorkOrderScreenState extends State<WorkOrderScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final o = widget.order;
+    final o = _currentOrder;
     final scheme = Theme.of(context).colorScheme;
-    return Scaffold(
-      appBar: AppBar(title: Text(widget.sectionTitle)),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _popWithOrder();
+      },
+      child: Scaffold(
+      appBar: AppBar(
+        title: Text(widget.sectionTitle),
+        leading: BackButton(onPressed: _popWithOrder),
+      ),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -103,7 +120,7 @@ class _WorkOrderScreenState extends State<WorkOrderScreen> {
             Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: Text(
-                'Удерживайте работу 1 сек — карточка зальётся зелёным. Ещё раз удержать — снять отметку.',
+                'Смахните работу в сторону — станет зелёной (сделано). Ещё раз смахнуть — снова серая.',
                 style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant, height: 1.35),
               ),
             ),
@@ -123,6 +140,7 @@ class _WorkOrderScreenState extends State<WorkOrderScreen> {
           ],
         ],
       ),
+    ),
     );
   }
 }
@@ -158,7 +176,7 @@ class _WorksSection extends StatelessWidget {
           child: Text('Работы', style: Theme.of(context).textTheme.titleMedium),
         ),
         for (final item in items) ...[
-          _HoldWorkCard(
+          _SwipeWorkCard(
             key: ValueKey(item.basketWorkId ?? item.name),
             item: item,
             enabled: canMark && item.basketWorkId != null,
@@ -171,8 +189,8 @@ class _WorksSection extends StatelessWidget {
   }
 }
 
-class _HoldWorkCard extends StatefulWidget {
-  const _HoldWorkCard({
+class _SwipeWorkCard extends StatefulWidget {
+  const _SwipeWorkCard({
     super.key,
     required this.item,
     required this.enabled,
@@ -184,62 +202,69 @@ class _HoldWorkCard extends StatefulWidget {
   final Future<void> Function(bool toWorkshop) onCommit;
 
   @override
-  State<_HoldWorkCard> createState() => _HoldWorkCardState();
+  State<_SwipeWorkCard> createState() => _SwipeWorkCardState();
 }
 
-class _HoldWorkCardState extends State<_HoldWorkCard> with SingleTickerProviderStateMixin {
-  static const _hold = Duration(seconds: 1);
+class _SwipeWorkCardState extends State<_SwipeWorkCard> {
   static const _doneGreen = Color(0xFF2E7D32);
-
-  late final AnimationController _holdCtrl;
   bool _busy = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _holdCtrl = AnimationController(vsync: this, duration: _hold);
-    _holdCtrl.addStatusListener((status) {
-      if (status == AnimationStatus.completed) {
-        _commit();
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    _holdCtrl.dispose();
-    super.dispose();
-  }
-
-  void _startHold() {
-    if (!widget.enabled || _busy) return;
-    _holdCtrl.forward(from: 0);
-  }
-
-  void _cancelHold() {
-    if (_busy) return;
-    if (_holdCtrl.status == AnimationStatus.completed) return;
-    _holdCtrl.reverse();
-  }
-
-  Future<void> _commit() async {
-    if (_busy || !mounted) return;
+  Future<bool> _onSwipe(DismissDirection _) async {
+    if (!widget.enabled || _busy) return false;
     setState(() => _busy = true);
     final next = !widget.item.toWorkshop;
     try {
       await HapticFeedback.mediumImpact();
       await widget.onCommit(next);
-      if (mounted) _holdCtrl.reset();
     } catch (e) {
       if (mounted) {
-        _holdCtrl.reset();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(e.toString())),
+        await showDialog<void>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Статус не сохранился'),
+            content: Text(e.toString()),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Понятно')),
+            ],
+          ),
         );
       }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+    // false — карточку не удаляем, только переключаем цвет.
+    return false;
+  }
+
+  Widget _swipeBg({required bool markDone, required Alignment align}) {
+    return Container(
+      alignment: align,
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      decoration: BoxDecoration(
+        color: markDone ? _doneGreen : Colors.blueGrey.shade400,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (align == Alignment.centerLeft) ...[
+            Icon(markDone ? Icons.check_circle : Icons.undo, color: Colors.white),
+            const SizedBox(width: 8),
+            Text(
+              markDone ? 'Сделано' : 'Снять',
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+            ),
+          ] else ...[
+            Text(
+              markDone ? 'Сделано' : 'Снять',
+              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(width: 8),
+            Icon(markDone ? Icons.check_circle : Icons.undo, color: Colors.white),
+          ],
+        ],
+      ),
+    );
   }
 
   @override
@@ -249,82 +274,76 @@ class _HoldWorkCardState extends State<_HoldWorkCard> with SingleTickerProviderS
     final price = widget.item.unitPrice;
     final total = widget.item.lineTotal;
     final qty = widget.item.qty;
+    final fg = done ? Colors.white : scheme.onSurface;
+    final muted = done ? Colors.white70 : scheme.onSurfaceVariant;
+    final markDone = !done;
 
-    return AnimatedBuilder(
-      animation: _holdCtrl,
-      builder: (context, child) {
-        final hold = _holdCtrl.value.clamp(0.0, 1.0);
-        final fill = done ? (1.0 - hold) : hold;
-        final filled = done && hold == 0;
-        final bg = Color.lerp(scheme.surfaceContainerHighest, _doneGreen, fill) ?? _doneGreen;
-        final fg = fill > 0.45 ? Colors.white : scheme.onSurface;
-        final muted = fill > 0.45 ? Colors.white70 : scheme.onSurfaceVariant;
-
-        return Material(
-          color: bg,
-          elevation: 1,
-          borderRadius: BorderRadius.circular(14),
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTapDown: widget.enabled ? (_) => _startHold() : null,
-            onTapUp: widget.enabled ? (_) => _cancelHold() : null,
-            onTapCancel: widget.enabled ? _cancelHold : null,
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(minHeight: 64),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-                child: Row(
+    final card = Material(
+      color: done ? _doneGreen : scheme.surfaceContainerHighest,
+      elevation: 1,
+      borderRadius: BorderRadius.circular(14),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minHeight: 64),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+          child: Row(
+            children: [
+              Icon(
+                done ? Icons.check_circle : Icons.radio_button_unchecked,
+                color: fg,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(
-                      filled || fill > 0.85 ? Icons.check_circle : Icons.radio_button_unchecked,
-                      color: fg,
+                    Text(
+                      widget.item.name,
+                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: fg),
                     ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            widget.item.name,
-                            style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: fg),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            filled
-                                ? 'Сделано'
-                                : widget.enabled
-                                    ? (hold > 0
-                                        ? (done ? 'Удерживайте, чтобы снять' : 'Удерживайте…')
-                                        : 'Удерживайте 1 сек')
-                                    : [
-                                        if (qty != 1) '${StooxFormat.qty(qty)} шт.',
-                                        if (price != null) '${StooxFormat.money(price)} / ед.',
-                                      ].join(' · '),
-                            style: TextStyle(fontSize: 12, color: muted),
-                          ),
-                        ],
-                      ),
+                    const SizedBox(height: 2),
+                    Text(
+                      done
+                          ? 'Сделано · смахните, чтобы снять'
+                          : widget.enabled
+                              ? 'Смахните, чтобы отметить'
+                              : [
+                                  if (qty != 1) '${StooxFormat.qty(qty)} шт.',
+                                  if (price != null) '${StooxFormat.money(price)} / ед.',
+                                ].join(' · '),
+                      style: TextStyle(fontSize: 12, color: muted),
                     ),
-                    if (total != null)
-                      Text(
-                        StooxFormat.money(total),
-                        style: TextStyle(fontWeight: FontWeight.w700, color: fg),
-                      ),
-                    if (_busy) ...[
-                      const SizedBox(width: 8),
-                      SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: fg),
-                      ),
-                    ],
                   ],
                 ),
               ),
-            ),
+              if (total != null)
+                Text(
+                  StooxFormat.money(total),
+                  style: TextStyle(fontWeight: FontWeight.w700, color: fg),
+                ),
+              if (_busy) ...[
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2, color: fg),
+                ),
+              ],
+            ],
           ),
-        );
-      },
+        ),
+      ),
+    );
+
+    if (!widget.enabled) return card;
+
+    return Dismissible(
+      key: ValueKey('swipe-${widget.item.basketWorkId ?? widget.item.name}'),
+      direction: _busy ? DismissDirection.none : DismissDirection.horizontal,
+      confirmDismiss: _onSwipe,
+      background: _swipeBg(markDone: markDone, align: Alignment.centerLeft),
+      secondaryBackground: _swipeBg(markDone: markDone, align: Alignment.centerRight),
+      child: card,
     );
   }
 }

@@ -20,6 +20,7 @@ class _BurstCameraScreenState extends State<BurstCameraScreen> {
   String? _error;
   bool _busy = false;
   int _shots = 0;
+  bool _torchOn = false;
 
   @override
   void initState() {
@@ -60,6 +61,21 @@ class _BurstCameraScreenState extends State<BurstCameraScreen> {
   void dispose() {
     _controller?.dispose();
     super.dispose();
+  }
+
+  Future<void> _toggleTorch() async {
+    final c = _controller;
+    if (c == null || !c.value.isInitialized) return;
+    final next = !_torchOn;
+    try {
+      await c.setFlashMode(next ? FlashMode.torch : FlashMode.off);
+      if (mounted) setState(() => _torchOn = next);
+    } on CameraException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Подсветка недоступна: ${e.description ?? e.code}')),
+      );
+    }
   }
 
   Future<void> _shoot() async {
@@ -135,7 +151,15 @@ class _BurstCameraScreenState extends State<BurstCameraScreen> {
                           ),
                           child: Text('$_shots', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
                         ),
-                      const Spacer(),
+                      IconButton(
+                        tooltip: _torchOn ? 'Выключить подсветку' : 'Включить подсветку',
+                        onPressed: c == null || !c.value.isInitialized ? null : _toggleTorch,
+                        icon: Icon(
+                          _torchOn ? Icons.flash_on : Icons.flash_off,
+                          color: _torchOn ? Colors.amber : Colors.white,
+                          size: 28,
+                        ),
+                      ),
                       TextButton(
                         onPressed: () => Navigator.pop(context),
                         child: const Text('Готово', style: TextStyle(color: Colors.white, fontSize: 16)),

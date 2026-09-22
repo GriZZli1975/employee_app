@@ -15,6 +15,7 @@ Future<void> showCarActions({
   Map<String, dynamic>? employeeSummary,
   List<dynamic> sales = const [],
   List<dynamic> warranty = const [],
+  ValueChanged<StooxWorkOrder>? onOrderUpdated,
 }) {
   return showModalBottomSheet<void>(
     context: context,
@@ -70,8 +71,8 @@ Future<void> showCarActions({
                   }
                 }
                 if (!context.mounted) return;
-                await Navigator.of(context).push(
-                  MaterialPageRoute<void>(
+                final updated = await Navigator.of(context).push<StooxWorkOrder>(
+                  MaterialPageRoute<StooxWorkOrder>(
                     builder: (_) => WorkOrderScreen(
                       order: resolved,
                       session: session,
@@ -79,6 +80,7 @@ Future<void> showCarActions({
                     ),
                   ),
                 );
+                if (updated != null) onOrderUpdated?.call(updated);
               },
               icon: const Icon(Icons.list_alt),
               label: Text(
