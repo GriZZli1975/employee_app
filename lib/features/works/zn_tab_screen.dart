@@ -26,6 +26,7 @@ class ZnTabScreenState extends State<ZnTabScreen> {
   String? _error;
   List<StooxWorkOrder> _sales = [];
   List<StooxWorkOrder> _warranty = [];
+  String? _employeeId;
 
   @override
   void initState() {
@@ -74,6 +75,7 @@ class ZnTabScreenState extends State<ZnTabScreen> {
       );
       if (!mounted) return;
       setState(() {
+        _employeeId = StooxWorkOrder.employeeIdFromSummary(dash.summary);
         _sales = dash.sales
             .whereType<Map>()
             .map((e) => StooxWorkOrder(Map<String, dynamic>.from(e)))
@@ -119,6 +121,9 @@ class ZnTabScreenState extends State<ZnTabScreen> {
           title: title,
           orders: orders,
           emptyText: emptyText,
+          session: widget.session,
+          employeeId: _employeeId,
+          defaultMineFilter: true,
         ),
       ),
     );

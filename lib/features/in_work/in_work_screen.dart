@@ -5,6 +5,8 @@ import '../../core/stoox_api.dart';
 import '../../core/work_order.dart';
 import 'car_actions_sheet.dart';
 
+enum _InWorkFilter { unfinished, all }
+
 class InWorkScreen extends StatefulWidget {
   const InWorkScreen({
     super.key,
@@ -26,11 +28,26 @@ class InWorkScreenState extends State<InWorkScreen> {
   List<dynamic> _sales = [];
   List<dynamic> _warranty = [];
   Map<String, dynamic>? _employeeSummary;
+  _InWorkFilter _filter = _InWorkFilter.unfinished;
 
-  @override
-  void initState() {
-    super.initState();
-    reload();
+  String? get _employeeId {
+    final s = _employeeSummary;
+    if (s == null) return null;
+    return StooxWorkOrder.employeeIdFromSummary(s);
+  }
+
+  int get _unfinishedCount {
+    final id = _employeeId;
+    if (id == null) return _items.length;
+    return _items.whereType<Map>().where((raw) {
+      final o = StooxWorkOrder(Map<String, dynamic>.from(raw));
+      return o.hasUnfinishedMyWorks(id);
+    }).length;
+  }
+
+  void _notifyCount() {
+    final visible = _filter == _InWorkFilter.unfinished ? _unfinishedCount : _items.length;
+    widget.onCountChanged?.call(visible);
   }
 
   void _patchOrder(StooxWorkOrder updated) {
@@ -43,8 +60,9 @@ class InWorkScreenState extends State<InWorkScreen> {
           else
             item,
       ];
-      _items = StooxWorkOrder.sortOpenBaskets(patched);
+      _items = StooxWorkOrder.sortOpenBaskets(patched, employeeId: _employeeId);
     });
+    _notifyCount();
   }
 
   Future<void> reload() async {
@@ -55,6 +73,7 @@ class InWorkScreenState extends State<InWorkScreen> {
     try {
       final client = StooxApi(widget.session);
       final dash = await client.fetchEmployeeDashboard();
+      final empId = StooxWorkOrder.employeeIdFromSummary(dash.summary);
       final items = StooxWorkOrder.sortOpenBaskets(
         await client.enrichBasketItems(
           dash.baskets,
@@ -63,6 +82,7 @@ class InWorkScreenState extends State<InWorkScreen> {
           employeeSummary: dash.summary,
           openOnly: true,
         ),
+        employeeId: empId,
       );
       if (mounted) {
         setState(() {
@@ -71,7 +91,7 @@ class InWorkScreenState extends State<InWorkScreen> {
           _warranty = dash.warranty;
           _employeeSummary = dash.summary;
         });
-        widget.onCountChanged?.call(items.length);
+        _notifyCount();
       }
     } on StooxApiException catch (e) {
       if (mounted) setState(() => _error = e.toString());
@@ -85,7 +105,14 @@ class InWorkScreenState extends State<InWorkScreen> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final groups = StooxWorkOrder.groupByPlanningDay(_items);
+    final empId = _employeeId;
+    final groups = StooxWorkOrder.groupByPlanningDay(
+      _items,
+      employeeId: empId,
+      unfinishedOnly: _filter == _InWorkFilter.unfinished,
+    );
+    final visibleEmpty = groups.every((g) => g.orders.isEmpty) || groups.isEmpty;
+
     return RefreshIndicator(
       onRefresh: reload,
       child: ListView(
@@ -98,8 +125,34 @@ class InWorkScreenState extends State<InWorkScreen> {
           ),
           const SizedBox(height: 4),
           const Text(
-            'По дням записи: время на карточке, дата — на линейке слева.',
+            'По вашим работам в ЗН. Зелёные — свои уже сделаны.',
             style: TextStyle(color: Colors.black54, height: 1.35),
+          ),
+          const SizedBox(height: 12),
+          SegmentedButton<_InWorkFilter>(
+            segments: [
+              ButtonSegment(
+                value: _InWorkFilter.unfinished,
+                label: Text('Недоделанные${empId != null ? ' ($_unfinishedCount)' : ''}'),
+                icon: const Icon(Icons.build_circle_outlined, size: 18),
+              ),
+              ButtonSegment(
+                value: _InWorkFilter.all,
+                label: Text('Все (${_items.length})'),
+                icon: const Icon(Icons.list_alt, size: 18),
+              ),
+            ],
+            selected: {_filter},
+            onSelectionChanged: (next) {
+              setState(() => _filter = next.first);
+              _notifyCount();
+            },
+            style: ButtonStyle(
+              visualDensity: VisualDensity.compact,
+              textStyle: WidgetStatePropertyAll(
+                Theme.of(context).textTheme.labelMedium,
+              ),
+            ),
           ),
           const SizedBox(height: 16),
           if (_loading) const LinearProgressIndicator(minHeight: 3),
@@ -134,6 +187,27 @@ class InWorkScreenState extends State<InWorkScreen> {
                 ),
               ),
             )
+          else if (!_loading && visibleEmpty && _error == null)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  children: [
+                    Icon(Icons.check_circle_outline, size: 48, color: Colors.green.shade400),
+                    const SizedBox(height: 12),
+                    const Text('Своих недоделанных нет', style: TextStyle(fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 4),
+                    Text(
+                      _items.isEmpty
+                          ? 'Нет авто в работе.'
+                          : 'Все ваши работы на ${_items.length} авто сделаны. Переключите фильтр на «Все», чтобы увидеть их.',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.black54, fontSize: 13),
+                    ),
+                  ],
+                ),
+              ),
+            )
           else
             for (var gi = 0; gi < groups.length; gi++) ...[
               _DayTimelineSection(
@@ -145,6 +219,7 @@ class InWorkScreenState extends State<InWorkScreen> {
                     for (final order in groups[gi].orders)
                       _CarTile(
                         order: order,
+                        employeeId: empId,
                         onTap: () => showCarActions(
                           context: context,
                           session: widget.session,
@@ -284,36 +359,75 @@ class _DayTimelineSection extends StatelessWidget {
 }
 
 class _CarTile extends StatelessWidget {
-  const _CarTile({required this.order, required this.onTap});
+  const _CarTile({
+    required this.order,
+    required this.onTap,
+    this.employeeId,
+  });
 
   final StooxWorkOrder order;
   final VoidCallback onTap;
+  final String? employeeId;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final overdue = order.isPlanningOverdue;
+    final myTotal = order.myWorksTotalCount(employeeId);
+    final myDone = order.myWorksDoneCount(employeeId);
+    final mineDone = order.allMyWorksDoneFor(employeeId);
+    // Зелёный важнее просрочки: свои работы закрыты — не тревожим.
+    final overdue = !mineDone && order.isPlanningOverdue;
     final time = order.planningTimeLabel;
+
+    final Color? cardColor;
+    final Color avatarBg;
+    final Color iconColor;
+    final Color? titleColor;
+    final Color? subtitleColor;
+
+    if (mineDone) {
+      cardColor = Colors.green.shade50;
+      avatarBg = Colors.green.withValues(alpha: 0.15);
+      iconColor = Colors.green.shade700;
+      titleColor = Colors.green.shade800;
+      subtitleColor = Colors.green.shade700;
+    } else if (overdue) {
+      cardColor = scheme.errorContainer.withValues(alpha: 0.45);
+      avatarBg = scheme.error.withValues(alpha: 0.15);
+      iconColor = scheme.error;
+      titleColor = scheme.error;
+      subtitleColor = scheme.error.withValues(alpha: 0.9);
+    } else {
+      cardColor = null;
+      avatarBg = scheme.primary.withValues(alpha: 0.12);
+      iconColor = scheme.primary;
+      titleColor = null;
+      subtitleColor = null;
+    }
+
+    final worksLabel = myTotal > 0
+        ? (mineDone ? 'мои $myDone/$myTotal ✓' : 'мои $myDone/$myTotal')
+        : '${order.works.length} работ';
+
     final subtitleParts = <String>[
       if (time != null && time.isNotEmpty) time,
       if (order.mark != null) '${order.mark} ${order.model ?? ''}'.trim(),
-      '${order.works.length} работ',
+      worksLabel,
     ];
+
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
-      color: overdue ? scheme.errorContainer.withValues(alpha: 0.45) : null,
+      color: cardColor,
       child: ListTile(
         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
         leading: Stack(
           clipBehavior: Clip.none,
           children: [
             CircleAvatar(
-              backgroundColor: overdue
-                  ? scheme.error.withValues(alpha: 0.15)
-                  : scheme.primary.withValues(alpha: 0.12),
+              backgroundColor: avatarBg,
               child: Icon(
-                Icons.directions_car,
-                color: overdue ? scheme.error : scheme.primary,
+                mineDone ? Icons.check_circle : Icons.directions_car,
+                color: iconColor,
               ),
             ),
             if (overdue)
@@ -330,13 +444,27 @@ class _CarTile extends StatelessWidget {
                   ),
                 ),
               ),
+            if (mineDone)
+              Positioned(
+                right: -2,
+                top: -2,
+                child: Container(
+                  width: 12,
+                  height: 12,
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade600,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: scheme.surface, width: 1.5),
+                  ),
+                ),
+              ),
           ],
         ),
         title: Text(
           order.regNumber ?? order.saleNumber,
           style: TextStyle(
             fontWeight: FontWeight.w600,
-            color: overdue ? scheme.error : null,
+            color: titleColor,
           ),
         ),
         subtitle: Text(
@@ -344,7 +472,7 @@ class _CarTile extends StatelessWidget {
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
           style: TextStyle(
-            color: overdue ? scheme.error.withValues(alpha: 0.9) : null,
+            color: subtitleColor,
             height: 1.3,
           ),
         ),

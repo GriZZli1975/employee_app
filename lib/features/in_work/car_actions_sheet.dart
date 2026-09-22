@@ -87,7 +87,11 @@ Future<void> showCarActions({
                     builder: (_) => WorkOrderScreen(
                       order: resolved,
                       session: session,
+                      employeeId: employeeSummary == null
+                          ? null
+                          : StooxWorkOrder.employeeIdFromSummary(employeeSummary),
                       allowMarkDone: true,
+                      defaultMineFilter: true,
                     ),
                   ),
                 );

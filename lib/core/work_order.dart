@@ -96,8 +96,17 @@ class StooxWorkOrder {
     return DateTime(end.year, end.month, end.day);
   }
 
-  /// Сортировка «В работе»: просроченные сверху, затем ближайший `date_end`.
-  static int compareByPlanningPriority(StooxWorkOrder a, StooxWorkOrder b) {
+  /// Сортировка «В работе»: сначала недоделанные (просрочка сверху), затем «мои всё сделано».
+  static int compareByPlanningPriority(
+    StooxWorkOrder a,
+    StooxWorkOrder b, {
+    String? employeeId,
+  }) {
+    if (employeeId != null) {
+      final aDone = a.allMyWorksDoneFor(employeeId);
+      final bDone = b.allMyWorksDoneFor(employeeId);
+      if (aDone != bDone) return aDone ? 1 : -1;
+    }
     final now = DateTime.now();
     final aEnd = a.planningEnd;
     final bEnd = b.planningEnd;
@@ -111,12 +120,12 @@ class StooxWorkOrder {
     return aEnd.compareTo(bEnd);
   }
 
-  static List<dynamic> sortOpenBaskets(List<dynamic> items) {
+  static List<dynamic> sortOpenBaskets(List<dynamic> items, {String? employeeId}) {
     final mapped = items
         .whereType<Map>()
         .map((e) => MapEntry(e, StooxWorkOrder(Map<String, dynamic>.from(e))))
         .toList();
-    mapped.sort((a, b) => compareByPlanningPriority(a.value, b.value));
+    mapped.sort((a, b) => compareByPlanningPriority(a.value, b.value, employeeId: employeeId));
     return [
       for (final e in mapped) e.key,
       ...items.where((e) => e is! Map),
@@ -125,12 +134,17 @@ class StooxWorkOrder {
 
   /// Группы для вертикальной линейки: день → авто (уже отсортированные).
   static List<({DateTime? day, List<StooxWorkOrder> orders})> groupByPlanningDay(
-    List<dynamic> items,
-  ) {
-    final sorted = sortOpenBaskets(items)
+    List<dynamic> items, {
+    String? employeeId,
+    bool unfinishedOnly = false,
+  }) {
+    var sorted = sortOpenBaskets(items, employeeId: employeeId)
         .whereType<Map>()
         .map((e) => StooxWorkOrder(Map<String, dynamic>.from(e)))
         .toList();
+    if (unfinishedOnly && employeeId != null) {
+      sorted = sorted.where((o) => o.hasUnfinishedMyWorks(employeeId)).toList();
+    }
     final groups = <DateTime?, List<StooxWorkOrder>>{};
     final orderKeys = <DateTime?>[];
     for (final o in sorted) {
@@ -141,8 +155,6 @@ class StooxWorkOrder {
       }
       groups[day]!.add(o);
     }
-    // Просроченные дни / без даты сверху уже заданы sortOpenBaskets;
-    // внутри ключей сохраняем порядок первого появления.
     return [
       for (final day in orderKeys) (day: day, orders: groups[day]!),
     ];
@@ -204,6 +216,60 @@ class StooxWorkOrder {
   List<StooxLineItem> get works => _firstLines(_worksKeys);
   List<StooxLineItem> get parts => _firstLines(_partsKeys);
   List<StooxLineItem> get cleaning => _firstLines(_cleaningKeys);
+
+  /// Работы, назначенные на сотрудника (`works[].employees[].employee_id`).
+  /// [fallbackAllIfUnassigned]: если ни у одной работы нет assignees (урезанный
+  /// формат sales) — вернуть все работы, иначе пустой список чужих.
+  List<StooxLineItem> worksForEmployee(
+    String? employeeId, {
+    bool fallbackAllIfUnassigned = false,
+  }) {
+    if (employeeId == null || employeeId.trim().isEmpty) return works;
+    final id = employeeId.trim();
+    final mine = works.where((w) => w.isAssignedTo(id)).toList();
+    if (mine.isNotEmpty) return mine;
+    if (fallbackAllIfUnassigned && !hasWorkEmployeeAssignments) return works;
+    return mine;
+  }
+
+  /// Хотя бы у одной работы есть назначение исполнителей.
+  bool get hasWorkEmployeeAssignments =>
+      works.any((w) => w.assignedEmployeeIds.isNotEmpty);
+
+  /// Сумма строк работ (lineTotal). Null если ни у одной нет цены.
+  static num? sumLineTotals(Iterable<StooxLineItem> items) {
+    num sum = 0;
+    var any = false;
+    for (final w in items) {
+      final t = w.lineTotal;
+      if (t == null) continue;
+      sum += t;
+      any = true;
+    }
+    return any ? sum : null;
+  }
+
+  num? myWorksSumFor(String? employeeId, {bool fallbackAllIfUnassigned = false}) =>
+      sumLineTotals(worksForEmployee(employeeId, fallbackAllIfUnassigned: fallbackAllIfUnassigned));
+
+  /// Есть незакрытые (`to_workshop=0`) работы текущего сотрудника.
+  bool hasUnfinishedMyWorks(String? employeeId) {
+    final mine = worksForEmployee(employeeId);
+    if (mine.isEmpty) return false;
+    return mine.any((w) => !w.toWorkshop);
+  }
+
+  /// Все свои работы отмечены сделанными. Без назначенных на сотрудника — false.
+  bool allMyWorksDoneFor(String? employeeId) {
+    final mine = worksForEmployee(employeeId);
+    if (mine.isEmpty) return false;
+    return mine.every((w) => w.toWorkshop);
+  }
+
+  int myWorksDoneCount(String? employeeId) =>
+      worksForEmployee(employeeId).where((w) => w.toWorkshop).length;
+
+  int myWorksTotalCount(String? employeeId) => worksForEmployee(employeeId).length;
 
   String get carInfo {
     final bits = [
@@ -480,6 +546,32 @@ class StooxLineItem {
     if (v is int) return v > 0 ? v : null;
     final n = int.tryParse(v?.toString() ?? '');
     return n != null && n > 0 ? n : null;
+  }
+
+  /// Назначенные исполнители работы (`employees[].employee_id`).
+  List<String> get assignedEmployeeIds {
+    final rawList = raw['employees'];
+    final list = <dynamic>[];
+    if (rawList is List) {
+      list.addAll(rawList);
+    } else if (rawList is Map) {
+      list.addAll(rawList.values);
+    }
+    final ids = <String>[];
+    for (final item in list) {
+      if (item is! Map) continue;
+      final id = item['employee_id'] ?? item['employeeId'] ?? item['id'];
+      if (id == null) continue;
+      final s = id.toString().trim();
+      if (s.isNotEmpty) ids.add(s);
+    }
+    return ids;
+  }
+
+  bool isAssignedTo(String employeeId) {
+    final id = employeeId.trim();
+    if (id.isEmpty) return false;
+    return assignedEmployeeIds.any((e) => e == id);
   }
 
   bool get toWorkshop {
