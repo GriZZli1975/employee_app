@@ -47,6 +47,17 @@ Future<void> showCarActions({
                 ),
               ),
             const SizedBox(height: 16),
+            if (order.hasClientNotes) ...[
+              FilledButton.tonalIcon(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _showClientNotes(context, order);
+                },
+                icon: const Icon(Icons.sticky_note_2_outlined),
+                label: const Text('Причина / заметка'),
+              ),
+              const SizedBox(height: 10),
+            ],
             FilledButton.icon(
               onPressed: () async {
                 Navigator.pop(ctx);
@@ -168,6 +179,52 @@ bool _hasPlate(StooxWorkOrder order, BuildContext context) {
     const SnackBar(content: Text('У авто нет госномера')),
   );
   return false;
+}
+
+Future<void> _showClientNotes(BuildContext context, StooxWorkOrder order) {
+  final reason = order.shReason;
+  final note = order.shNote;
+  return showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    isScrollControlled: true,
+    builder: (ctx) {
+      final bottom = MediaQuery.paddingOf(ctx).bottom;
+      return Padding(
+        padding: EdgeInsets.fromLTRB(20, 8, 20, 16 + bottom),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Причина и заметка',
+                style: Theme.of(ctx).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                order.regNumber ?? order.saleNumber,
+                style: const TextStyle(color: Colors.black54),
+              ),
+              if (reason != null && reason.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                Text('Причина (со слов клиента)', style: Theme.of(ctx).textTheme.titleSmall),
+                const SizedBox(height: 6),
+                Text(reason, style: const TextStyle(height: 1.4)),
+              ],
+              if (note != null && note.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                Text('Заметка', style: Theme.of(ctx).textTheme.titleSmall),
+                const SizedBox(height: 6),
+                Text(note, style: const TextStyle(height: 1.4)),
+              ],
+              const SizedBox(height: 12),
+            ],
+          ),
+        ),
+      );
+    },
+  );
 }
 
 int? _employeeId(Map<String, dynamic>? summary) {

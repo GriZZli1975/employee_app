@@ -34,10 +34,146 @@ class StooxWorkOrder {
     return s.isEmpty || s == 'false' || s == '0';
   }
 
+  /// Причина обращения / заметка ЗН из Stoox (`sh_reason`, `sh_note`).
+  String? get shReason => _cleanNote(raw['sh_reason'] ?? raw['reason']);
+  String? get shNote => _cleanNote(raw['sh_note'] ?? raw['note']);
+  bool get hasClientNotes {
+    final r = shReason;
+    final n = shNote;
+    return (r != null && r.isNotEmpty) || (n != null && n.isNotEmpty);
+  }
+
+  /// Актуальная запись на ремонт: с максимальным `date_end`.
+  StooxPlanningSlot? get latestPlanning {
+    final slots = planningSlots;
+    if (slots.isEmpty) return null;
+    slots.sort((a, b) {
+      final ae = a.end ?? a.start;
+      final be = b.end ?? b.start;
+      if (ae == null && be == null) return 0;
+      if (ae == null) return 1;
+      if (be == null) return -1;
+      return be.compareTo(ae);
+    });
+    return slots.first;
+  }
+
+  List<StooxPlanningSlot> get planningSlots {
+    final rawList = raw['records'];
+    final list = <dynamic>[];
+    if (rawList is List) {
+      list.addAll(rawList);
+    } else if (rawList is Map) {
+      list.addAll(rawList.values);
+    }
+    final out = <StooxPlanningSlot>[];
+    for (final item in list) {
+      if (item is! Map) continue;
+      final slot = StooxPlanningSlot.fromMap(Map<String, dynamic>.from(item));
+      if (slot.start != null || slot.end != null) out.add(slot);
+    }
+    return out;
+  }
+
+  DateTime? get planningEnd => latestPlanning?.end ?? latestPlanning?.start;
+
+  /// Плановое время вышло — авто «зависло» относительно записи.
+  bool get isPlanningOverdue {
+    final end = planningEnd;
+    if (end == null) return false;
+    return end.isBefore(DateTime.now());
+  }
+
+  String? get planningRangeLabel => latestPlanning?.rangeLabel;
+
+  /// Только время актуальной записи (дата — в заголовке линейки).
+  String? get planningTimeLabel => latestPlanning?.timeLabel;
+
+  /// День для группировки линейки (по date_end актуальной записи).
+  DateTime? get planningDay {
+    final end = planningEnd ?? latestPlanning?.start;
+    if (end == null) return null;
+    return DateTime(end.year, end.month, end.day);
+  }
+
+  /// Сортировка «В работе»: просроченные сверху, затем ближайший `date_end`.
+  static int compareByPlanningPriority(StooxWorkOrder a, StooxWorkOrder b) {
+    final now = DateTime.now();
+    final aEnd = a.planningEnd;
+    final bEnd = b.planningEnd;
+    final aOver = aEnd != null && aEnd.isBefore(now);
+    final bOver = bEnd != null && bEnd.isBefore(now);
+    if (aOver != bOver) return aOver ? -1 : 1;
+    if (aEnd == null && bEnd == null) return 0;
+    if (aEnd == null) return 1;
+    if (bEnd == null) return -1;
+    if (aOver && bOver) return aEnd.compareTo(bEnd);
+    return aEnd.compareTo(bEnd);
+  }
+
+  static List<dynamic> sortOpenBaskets(List<dynamic> items) {
+    final mapped = items
+        .whereType<Map>()
+        .map((e) => MapEntry(e, StooxWorkOrder(Map<String, dynamic>.from(e))))
+        .toList();
+    mapped.sort((a, b) => compareByPlanningPriority(a.value, b.value));
+    return [
+      for (final e in mapped) e.key,
+      ...items.where((e) => e is! Map),
+    ];
+  }
+
+  /// Группы для вертикальной линейки: день → авто (уже отсортированные).
+  static List<({DateTime? day, List<StooxWorkOrder> orders})> groupByPlanningDay(
+    List<dynamic> items,
+  ) {
+    final sorted = sortOpenBaskets(items)
+        .whereType<Map>()
+        .map((e) => StooxWorkOrder(Map<String, dynamic>.from(e)))
+        .toList();
+    final groups = <DateTime?, List<StooxWorkOrder>>{};
+    final orderKeys = <DateTime?>[];
+    for (final o in sorted) {
+      final day = o.planningDay;
+      if (!groups.containsKey(day)) {
+        groups[day] = [];
+        orderKeys.add(day);
+      }
+      groups[day]!.add(o);
+    }
+    // Просроченные дни / без даты сверху уже заданы sortOpenBaskets;
+    // внутри ключей сохраняем порядок первого появления.
+    return [
+      for (final day in orderKeys) (day: day, orders: groups[day]!),
+    ];
+  }
+
   StooxWorkOrder withWorks(List<StooxLineItem> works) {
     final map = Map<String, dynamic>.from(raw);
     map['works'] = works.map((w) => Map<String, dynamic>.from(w.raw)).toList();
     return StooxWorkOrder(map);
+  }
+
+  static String? _cleanNote(dynamic value) {
+    if (value == null) return null;
+    var s = value.toString().trim();
+    if (s.isEmpty || s == '-' || s == 'null') return null;
+    // Убрать пустые сегменты вида "; -; -" и лишние кавычки.
+    final parts = <String>[];
+    for (final rawPart in s.split(';')) {
+      var p = rawPart.trim();
+      while (p.startsWith("'") || p.startsWith('"')) {
+        p = p.substring(1);
+      }
+      while (p.endsWith("'") || p.endsWith('"')) {
+        p = p.substring(0, p.length - 1);
+      }
+      p = p.trim();
+      if (p.isEmpty || p == '-') continue;
+      parts.add(p);
+    }
+    s = parts.join('\n').trim();
+    return s.isEmpty ? null : s;
   }
 
   num? get totalSum {
@@ -213,6 +349,90 @@ class StooxWorkOrder {
     if (value is num) return value;
     return num.tryParse(value.toString().replaceAll(' ', '').replaceAll(',', '.'));
   }
+}
+
+class StooxPlanningSlot {
+  StooxPlanningSlot({this.start, this.end, this.boxId});
+
+  final DateTime? start;
+  final DateTime? end;
+  final int? boxId;
+
+  factory StooxPlanningSlot.fromMap(Map<String, dynamic> map) {
+    return StooxPlanningSlot(
+      start: parseStooxDateTime(map['date_start'] ?? map['record_start']),
+      end: parseStooxDateTime(map['date_end'] ?? map['record_end']),
+      boxId: StooxWorkOrder._int(map['box_id']),
+    );
+  }
+
+  bool get isOverdue {
+    final e = end ?? start;
+    if (e == null) return false;
+    return e.isBefore(DateTime.now());
+  }
+
+  String get rangeLabel {
+    final s = start;
+    final e = end;
+    if (s == null && e == null) return '';
+    if (s != null && e != null) {
+      return '${_fmtDateTime(s)} – ${_fmtDateTime(e)}';
+    }
+    if (s != null) return 'с ${_fmtDateTime(s)}';
+    return 'до ${_fmtDateTime(e!)}';
+  }
+
+  /// Только часы:минуты для строки авто в линейке.
+  String get timeLabel {
+    final s = start;
+    final e = end;
+    if (s == null && e == null) return '';
+    if (s != null && e != null) {
+      if (_sameDay(s, e)) return '${_fmtTime(s)} – ${_fmtTime(e)}';
+      return '${_fmtDateTime(s)} – ${_fmtDateTime(e)}';
+    }
+    if (s != null) return _fmtTime(s);
+    return _fmtTime(e!);
+  }
+
+  static bool _sameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  static String _fmtTime(DateTime d) {
+    final hh = d.hour.toString().padLeft(2, '0');
+    final mi = d.minute.toString().padLeft(2, '0');
+    return '$hh:$mi';
+  }
+
+  static String _fmtDateTime(DateTime d) {
+    final dd = d.day.toString().padLeft(2, '0');
+    final mm = d.month.toString().padLeft(2, '0');
+    return '$dd.$mm ${_fmtTime(d)}';
+  }
+}
+
+/// Парсер дат Stoox: `22.09.2026 11:30:00` или ISO.
+DateTime? parseStooxDateTime(dynamic value) {
+  if (value == null) return null;
+  if (value is DateTime) return value;
+  final s = value.toString().trim();
+  if (s.isEmpty) return null;
+  final ru = RegExp(
+    r'^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$',
+  );
+  final m = ru.firstMatch(s);
+  if (m != null) {
+    return DateTime(
+      int.parse(m.group(3)!),
+      int.parse(m.group(2)!),
+      int.parse(m.group(1)!),
+      int.parse(m.group(4) ?? '0'),
+      int.parse(m.group(5) ?? '0'),
+      int.parse(m.group(6) ?? '0'),
+    );
+  }
+  return DateTime.tryParse(s.replaceFirst(' ', 'T'));
 }
 
 class StooxLineItem {
