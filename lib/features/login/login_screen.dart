@@ -24,13 +24,13 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final _hostCtrl = TextEditingController(text: 'fo.stoox.ru');
-  final _apiKeyCtrl = TextEditingController();
-  final _pcKeyCtrl = TextEditingController();
   final _botUrlCtrl = TextEditingController();
+  final _pcKeyCtrl = TextEditingController();
+  final _hostCtrl = TextEditingController();
+  final _apiKeyCtrl = TextEditingController();
   bool _loading = false;
   String? _error;
-  bool _showBotUrl = false;
+  bool _showAdvanced = false;
 
   @override
   void initState() {
@@ -44,21 +44,21 @@ class _LoginScreenState extends State<LoginScreen> {
     final botUrl = await widget.session.getBotUrl();
     if (!mounted) return;
     setState(() {
-      if (host.isNotEmpty) _hostCtrl.text = host.replaceFirst(RegExp(r'^https?://'), '');
-      if (apiKey.isNotEmpty) _apiKeyCtrl.text = apiKey;
-      if (botUrl.isNotEmpty) {
-        _botUrlCtrl.text = botUrl;
-        _showBotUrl = true;
+      if (botUrl.isNotEmpty) _botUrlCtrl.text = botUrl;
+      if (host.isNotEmpty) {
+        _hostCtrl.text = host.replaceFirst(RegExp(r'^https?://'), '');
       }
+      if (apiKey.isNotEmpty) _apiKeyCtrl.text = apiKey;
+      if (host.isNotEmpty || apiKey.isNotEmpty) _showAdvanced = false;
     });
   }
 
   @override
   void dispose() {
+    _botUrlCtrl.dispose();
+    _pcKeyCtrl.dispose();
     _hostCtrl.dispose();
     _apiKeyCtrl.dispose();
-    _pcKeyCtrl.dispose();
-    _botUrlCtrl.dispose();
     super.dispose();
   }
 
@@ -69,27 +69,23 @@ class _LoginScreenState extends State<LoginScreen> {
     if (payload == null || !mounted) return;
     setState(() {
       if (payload.pcKey != null) _pcKeyCtrl.text = payload.pcKey!;
+      if (payload.botUrl != null) _botUrlCtrl.text = payload.botUrl!;
       if (payload.host != null) {
         _hostCtrl.text = payload.host!.replaceFirst(RegExp(r'^https?://'), '');
+        _showAdvanced = true;
       }
-      if (payload.apiKey != null) _apiKeyCtrl.text = payload.apiKey!;
-      if (payload.botUrl != null) {
-        _botUrlCtrl.text = payload.botUrl!;
-        _showBotUrl = true;
+      if (payload.apiKey != null) {
+        _apiKeyCtrl.text = payload.apiKey!;
+        _showAdvanced = true;
       }
     });
   }
 
   Future<void> _connect() async {
-    final host = _hostCtrl.text.trim();
-    final apiKey = _apiKeyCtrl.text.trim();
+    final botUrl = EmployeeSession.normalizeBotUrl(_botUrlCtrl.text);
     final pcKey = _pcKeyCtrl.text.trim();
-    if (host.isEmpty) {
-      setState(() => _error = 'Укажите хост Stoox, например fo.stoox.ru');
-      return;
-    }
-    if (apiKey.isEmpty) {
-      setState(() => _error = 'Укажите ключ компании (key копии Stoox)');
+    if (botUrl.isEmpty) {
+      setState(() => _error = 'Укажите URL сервиса бота, например https://fo.messagebot.stoox.tech');
       return;
     }
     if (pcKey.isEmpty) {
@@ -103,47 +99,74 @@ class _LoginScreenState extends State<LoginScreen> {
     });
 
     try {
+      await widget.session.saveBotUrl(botUrl);
+      await widget.session.savePcKey(pcKey);
+
+      // Всегда спрашиваем бота: он — источник хоста и ключа компании.
+      // Ручные поля — только fallback, если bootstrap недоступен.
+      String host = '';
+      String apiKey = '';
+      try {
+        final boot = await BotApi(widget.session).bootstrap(botBaseUrl: botUrl, pcKey: pcKey);
+        host = (boot['stoox_host'] ?? boot['stoox_base_url'] ?? '').toString().trim();
+        apiKey = (boot['stoox_api_key'] ?? '').toString().trim();
+        final returnedBot = (boot['bot_base_url'] ?? '').toString().trim();
+        if (returnedBot.isNotEmpty) {
+          await widget.session.saveBotUrl(returnedBot);
+          if (mounted) _botUrlCtrl.text = returnedBot;
+        }
+        if (mounted) {
+          setState(() {
+            if (host.isNotEmpty) {
+              _hostCtrl.text = host.replaceFirst(RegExp(r'^https?://'), '');
+            }
+            if (apiKey.isNotEmpty) _apiKeyCtrl.text = apiKey;
+          });
+        }
+      } on BotApiException catch (e) {
+        // Fallback на ручной ввод, если бот старый / недоступен
+        host = _hostCtrl.text.trim();
+        apiKey = _apiKeyCtrl.text.trim();
+        if (host.isEmpty || apiKey.isEmpty) {
+          rethrow;
+        }
+        if (mounted) {
+          setState(() {
+            _showAdvanced = true;
+            _error = 'Bootstrap бота не удался ($e). Используем ручной хост/ключ.';
+          });
+        }
+      }
+
+      if (host.isEmpty || apiKey.isEmpty) {
+        throw BotApiException(0, 'Нет хоста или ключа компании — проверьте URL бота и PC-ключ');
+      }
+
       await widget.session.saveBaseUrl(host);
       await widget.session.saveApiKey(apiKey);
-      await widget.session.savePcKey(pcKey);
-      if (_botUrlCtrl.text.trim().isNotEmpty) {
-        await widget.session.saveBotUrl(_botUrlCtrl.text.trim());
-      }
 
       final api = StooxApi(widget.session);
       final dash = await api.fetchEmployeeDashboard();
       await widget.session.saveEmployeeCache(dash.summary);
 
-      var botUrl = EmployeeSession.normalizeBotUrl(_botUrlCtrl.text);
-      botUrl = botUrl.isNotEmpty ? botUrl : (await api.fetchBotBaseUrl() ?? '');
-      if (botUrl.isNotEmpty) {
-        await widget.session.saveBotUrl(botUrl);
-        if (mounted) _botUrlCtrl.text = botUrl;
-        try {
-          await BotApi(widget.session).pingMe();
-        } on BotApiException catch (e) {
-          if (mounted) {
-            setState(() {
-              _showBotUrl = true;
-              _error = 'Stoox ок, но бот не принял ключ: $e';
-              _loading = false;
-            });
-          }
-          return;
-        }
-      } else {
-        setState(() {
-          _showBotUrl = true;
-          _error = 'Stoox не отдал URL сервиса бота. Укажите адрес Railway, например https://xxx.up.railway.app';
-          _loading = false;
-        });
-        return;
-      }
+      await BotApi(widget.session).pingMe();
 
       if (!mounted) return;
       widget.onConnected();
+    } on BotApiException catch (e) {
+      if (mounted) {
+        setState(() {
+          _error = e.toString();
+          _showAdvanced = true;
+        });
+      }
     } on StooxApiException catch (e) {
-      if (mounted) setState(() => _error = e.toString());
+      if (mounted) {
+        setState(() {
+          _error = e.toString();
+          _showAdvanced = true;
+        });
+      }
     } catch (e) {
       if (mounted) setState(() => _error = e.toString());
     } finally {
@@ -178,31 +201,21 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Вход только через Stoox: хост, ключ компании и PC-ключ.',
+              'Укажите URL бота и PC-ключ. Хост Stoox и ключ компании подтянутся с бота после проверки.',
               textAlign: TextAlign.center,
               style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, height: 1.35),
             ),
             const SizedBox(height: 28),
             TextField(
-              controller: _hostCtrl,
+              controller: _botUrlCtrl,
               decoration: const InputDecoration(
-                labelText: 'Хост Stoox',
-                hintText: 'fo.stoox.ru',
+                labelText: 'URL сервиса бота',
+                hintText: 'https://fo.messagebot.stoox.tech',
+                helperText: 'Адрес Miran / messagebot, не ссылка t.me',
                 border: OutlineInputBorder(),
               ),
               keyboardType: TextInputType.url,
               textInputAction: TextInputAction.next,
-              autocorrect: false,
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: _apiKeyCtrl,
-              decoration: const InputDecoration(
-                labelText: 'Ключ компании',
-                helperText: 'Заголовок key копии Stoox, не PC-ключ',
-                border: OutlineInputBorder(),
-              ),
-              obscureText: true,
               autocorrect: false,
             ),
             const SizedBox(height: 12),
@@ -225,22 +238,34 @@ class _LoginScreenState extends State<LoginScreen> {
             Align(
               alignment: Alignment.centerLeft,
               child: TextButton(
-                onPressed: () => setState(() => _showBotUrl = !_showBotUrl),
-                child: Text(_showBotUrl ? 'Скрыть URL бота' : 'URL сервиса бота (если не подтянулся)'),
+                onPressed: () => setState(() => _showAdvanced = !_showAdvanced),
+                child: Text(_showAdvanced ? 'Скрыть ручные настройки' : 'Ручной хост / ключ компании'),
               ),
             ),
-            if (_showBotUrl)
+            if (_showAdvanced) ...[
               TextField(
-                controller: _botUrlCtrl,
+                controller: _hostCtrl,
                 decoration: const InputDecoration(
-                  labelText: 'URL сервиса бота',
-                  hintText: 'https://web-production-xxxx.up.railway.app',
-                  helperText: 'Полный адрес Railway, один раз https://',
+                  labelText: 'Хост Stoox (если уже знаете)',
+                  hintText: 'fo.stoox.ru',
+                  helperText: 'Оставьте пустым — подтянется с бота',
                   border: OutlineInputBorder(),
                 ),
                 keyboardType: TextInputType.url,
                 autocorrect: false,
               ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _apiKeyCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Ключ компании',
+                  helperText: 'Оставьте пустым — подтянется с бота после PC-ключа',
+                  border: OutlineInputBorder(),
+                ),
+                obscureText: true,
+                autocorrect: false,
+              ),
+            ],
             if (_error != null) ...[
               const SizedBox(height: 12),
               Material(

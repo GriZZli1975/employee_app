@@ -62,6 +62,29 @@ class BotApi {
     return _decode(res);
   }
 
+  /// Первый вход: только URL бота + PC-ключ. Хост и ключ компании отдаёт бот после проверки.
+  Future<Map<String, dynamic>> bootstrap({
+    required String botBaseUrl,
+    required String pcKey,
+  }) async {
+    final base = EmployeeSession.normalizeBotUrl(botBaseUrl);
+    if (base.isEmpty) {
+      throw BotApiException(0, 'Не задан URL сервиса бота');
+    }
+    final key = pcKey.trim();
+    if (key.isEmpty) {
+      throw BotApiException(0, 'Укажите PC-ключ сотрудника');
+    }
+    final res = await http
+        .post(
+          Uri.parse('$base/api/employee/bootstrap'),
+          headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+          body: jsonEncode({'pc_key': key}),
+        )
+        .timeout(const Duration(seconds: 25));
+    return _decode(res);
+  }
+
   Future<Map<String, dynamic>> uploadFile({
     required File file,
     required String kind,
