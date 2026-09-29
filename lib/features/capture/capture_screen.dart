@@ -2,13 +2,15 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/bot_api.dart';
 import '../../core/session.dart';
 import '../../core/work_order.dart';
 import '../../widgets/media_carousel.dart';
+import '../../widgets/voice_record_button.dart';
 import 'burst_camera_screen.dart';
+import 'capture_torch.dart';
 import 'voice_recorder.dart';
 
 class CaptureScreen extends StatefulWidget {
@@ -70,22 +72,30 @@ class _DraftResult {
 }
 
 class _CaptureScreenState extends State<CaptureScreen> {
-  final _picker = ImagePicker();
+  static const _maxVoice = Duration(seconds: 30);
+
   final _voice = VoiceRecorder();
+  final _torch = CaptureTorch();
   final _notesCtrl = TextEditingController();
   final _items = <_SessionItem>[];
   late String _sessionId;
   bool _finishing = false;
   bool _recording = false;
-  DateTime? _recordStarted;
-  Timer? _recordTick;
+  bool _torchOn = false;
   String? _error;
   _DraftResult? _draft;
   final _workCtrls = <TextEditingController>[];
   final _transcriptCtrl = TextEditingController();
   int _pendingUploads = 0;
+  bool _closed = false;
 
   BotApi get _bot => BotApi(widget.session);
+
+  List<String> get _mediaIds => _items
+      .map((e) => e.mediaId)
+      .whereType<String>()
+      .where((id) => id.isNotEmpty)
+      .toList();
 
   @override
   void initState() {
@@ -96,23 +106,61 @@ class _CaptureScreenState extends State<CaptureScreen> {
 
   @override
   void dispose() {
-    _recordTick?.cancel();
     _notesCtrl.dispose();
     _transcriptCtrl.dispose();
     for (final c in _workCtrls) {
       c.dispose();
     }
+    unawaited(_torch.dispose());
     _voice.dispose();
     super.dispose();
+  }
+
+  static String _savedAtLabel(dynamic raw) {
+    final dt = DateTime.tryParse(raw?.toString() ?? '')?.toLocal();
+    if (dt == null) return '';
+    String two(int n) => n.toString().padLeft(2, '0');
+    return ' от ${two(dt.day)}.${two(dt.month)} ${two(dt.hour)}:${two(dt.minute)}';
   }
 
   Future<void> _restoreDraft() async {
     final data = await widget.session.loadCaptureDraft(
       kind: widget.kind,
+      saleId: widget.order.saleId,
       carId: widget.order.carId,
       plate: widget.order.regNumber,
     );
     if (data == null || !mounted) return;
+    final rawList = data['items'];
+    final hasContent = (rawList is List && rawList.isNotEmpty) ||
+        (data['notes']?.toString().trim().isNotEmpty ?? false);
+    if (!hasContent) return;
+    final resume = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Есть незаконченный черновик'),
+        content: Text(
+          '${widget.order.saleId != null ? 'По этому заказ-наряду' : 'По этой машине'} '
+          'остались файлы с прошлого раза (${rawList is List ? rawList.length : 0})'
+          '${_savedAtLabel(data['saved_at'])}. Продолжить или начать заново?',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Начать заново')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Продолжить')),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (resume != true) {
+      await widget.session.clearCaptureDraft(
+        kind: widget.kind,
+        saleId: widget.order.saleId,
+        carId: widget.order.carId,
+        plate: widget.order.regNumber,
+      );
+      return;
+    }
     final sid = data['session_id']?.toString();
     if (sid != null && sid.isNotEmpty) _sessionId = sid;
     _notesCtrl.text = data['notes']?.toString() ?? '';
@@ -144,12 +192,15 @@ class _CaptureScreenState extends State<CaptureScreen> {
   }
 
   Future<void> _persistDraft() async {
+    if (_closed) return;
     await widget.session.saveCaptureDraft(
       kind: widget.kind,
+      saleId: widget.order.saleId,
       carId: widget.order.carId,
       plate: widget.order.regNumber,
       draft: {
         'session_id': _sessionId,
+        'saved_at': DateTime.now().toIso8601String(),
         'notes': _notesCtrl.text,
         'items': _items
             .map(
@@ -224,15 +275,33 @@ class _CaptureScreenState extends State<CaptureScreen> {
     return 'application/octet-stream';
   }
 
-  Future<void> _openBurstCamera() async {
+  Future<void> _openCamera() async {
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => BurstCameraScreen(
-          onCaptured: (file) async {
+          onPhotoCaptured: (file) async {
             _enqueueFile(
               file: file,
               messageType: 'photo',
               filename: 'photo_${DateTime.now().millisecondsSinceEpoch}.jpg',
+              mimeType: 'image/jpeg',
+              label: 'Фото',
+            );
+          },
+          onVideoCaptured: (file) async {
+            _enqueueFile(
+              file: file,
+              messageType: 'video',
+              filename: 'video_${DateTime.now().millisecondsSinceEpoch}.mp4',
+              mimeType: 'video/mp4',
+              label: 'Видео',
+            );
+          },
+          onGalleryPicked: (file) async {
+            _enqueueFile(
+              file: file,
+              messageType: 'photo',
+              filename: file.path.split(Platform.pathSeparator).last,
               mimeType: 'image/jpeg',
               label: 'Фото',
             );
@@ -242,33 +311,8 @@ class _CaptureScreenState extends State<CaptureScreen> {
     );
   }
 
-  Future<void> _pickGallery() async {
-    final files = await _picker.pickMultiImage(imageQuality: 70, maxWidth: 1920, maxHeight: 1920);
-    for (final file in files) {
-      _enqueueFile(
-        file: File(file.path),
-        messageType: 'photo',
-        filename: file.name.isNotEmpty ? file.name : 'photo.jpg',
-        mimeType: 'image/jpeg',
-        label: 'Фото',
-      );
-    }
-  }
-
-  Future<void> _pickVideo() async {
-    final file = await _picker.pickVideo(source: ImageSource.camera, maxDuration: const Duration(minutes: 2));
-    if (file == null) return;
-    _enqueueFile(
-      file: File(file.path),
-      messageType: 'video',
-      filename: file.name.isNotEmpty ? file.name : 'video.mp4',
-      mimeType: 'video/mp4',
-      label: 'Видео',
-    );
-  }
-
-  Future<void> _startVoice() async {
-    if (_recording) return;
+  Future<bool> _startVoice() async {
+    if (_recording) return false;
     final ok = await _voice.start();
     if (!ok) {
       if (mounted) {
@@ -276,26 +320,16 @@ class _CaptureScreenState extends State<CaptureScreen> {
           const SnackBar(content: Text('Нет доступа к микрофону')),
         );
       }
-      return;
+      return false;
     }
-    setState(() {
-      _recording = true;
-      _recordStarted = DateTime.now();
-    });
-    _recordTick?.cancel();
-    _recordTick = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() {});
-    });
+    setState(() => _recording = true);
+    return true;
   }
 
   Future<void> _stopVoice() async {
     if (!_recording) return;
-    _recordTick?.cancel();
     final path = await _voice.stop();
-    setState(() {
-      _recording = false;
-      _recordStarted = null;
-    });
+    setState(() => _recording = false);
     if (path == null) return;
     _enqueueFile(
       file: File(path),
@@ -306,13 +340,17 @@ class _CaptureScreenState extends State<CaptureScreen> {
     );
   }
 
-  String _recordLabel() {
-    final start = _recordStarted;
-    if (start == null) return '0:00';
-    final s = DateTime.now().difference(start).inSeconds;
-    final m = (s ~/ 60).toString();
-    final ss = (s % 60).toString().padLeft(2, '0');
-    return '$m:$ss';
+  Future<void> _toggleTorch() async {
+    final ok = await _torch.toggle();
+    if (!mounted) return;
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Фонарик недоступен на этом устройстве')),
+      );
+      return;
+    }
+    await HapticFeedback.selectionClick();
+    setState(() => _torchOn = _torch.isOn);
   }
 
   Future<void> _removeItem(_SessionItem item) async {
@@ -340,6 +378,14 @@ class _CaptureScreenState extends State<CaptureScreen> {
     while (_pendingUploads > 0 && DateTime.now().isBefore(deadline)) {
       await Future<void>.delayed(const Duration(milliseconds: 250));
     }
+    final notUploaded = _items.where((e) => e.mediaId == null || e.mediaId!.isEmpty).length;
+    if (notUploaded > 0) {
+      setState(() {
+        _finishing = false;
+        _error = 'Не загрузилось файлов: $notUploaded. Нажмите на файл с ошибкой для повтора или удалите его.';
+      });
+      return;
+    }
     try {
       final res = await _bot.completeInspection(
         sessionId: _sessionId,
@@ -348,6 +394,7 @@ class _CaptureScreenState extends State<CaptureScreen> {
         employeeId: widget.employeeId,
         employeeName: widget.employeeName,
         notes: _notesCtrl.text.trim(),
+        mediaIds: _mediaIds,
         notifyMp: false,
       );
       if (!mounted) return;
@@ -392,10 +439,13 @@ class _CaptureScreenState extends State<CaptureScreen> {
         notes: _notesCtrl.text.trim(),
         transcript: _transcriptCtrl.text.trim(),
         workItems: works,
+        mediaIds: _mediaIds,
         notifyMp: true,
       );
+      _closed = true;
       await widget.session.clearCaptureDraft(
         kind: widget.kind,
+        saleId: widget.order.saleId,
         carId: widget.order.carId,
         plate: widget.order.regNumber,
       );
@@ -414,145 +464,22 @@ class _CaptureScreenState extends State<CaptureScreen> {
   }
 
   Future<void> _discardDraft() async {
+    _closed = true;
     await widget.session.clearCaptureDraft(
       kind: widget.kind,
+      saleId: widget.order.saleId,
       carId: widget.order.carId,
       plate: widget.order.regNumber,
     );
     if (mounted) Navigator.of(context).pop();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final draft = _draft;
-    return PopScope(
-      canPop: true,
-      onPopInvokedWithResult: (didPop, _) {
-        if (didPop) unawaited(_persistDraft());
-      },
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text(widget.title),
-          actions: [
-            TextButton(
-              onPressed: _discardDraft,
-              child: const Text('Сбросить'),
-            ),
-          ],
-        ),
-        body: draft != null ? _buildDraft(context, draft) : _buildCapture(context),
-        bottomNavigationBar: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-            child: FilledButton.icon(
-              onPressed: _finishing
-                  ? null
-                  : draft != null
-                      ? _sendToMp
-                      : _prepareDraft,
-              icon: Icon(draft != null ? Icons.send : Icons.check),
-              label: Text(
-                _finishing
-                    ? 'Секунду…'
-                    : draft != null
-                        ? 'Отправить МП'
-                        : 'Готово',
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildCapture(BuildContext context) {
-    final order = widget.order;
+  Widget _buildShotsGrid(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          order.regNumber ?? order.saleNumber,
-          style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
-        ),
-        if (order.carInfo.isNotEmpty)
-          Text(order.carInfo, style: TextStyle(color: scheme.onSurfaceVariant)),
-        const SizedBox(height: 12),
-        if (_error != null)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 12),
-            child: Text(_error!, style: TextStyle(color: scheme.error)),
-          ),
-        Row(
-          children: [
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: _openBurstCamera,
-                icon: const Icon(Icons.photo_camera),
-                label: const Text('Камера'),
-              ),
-            ),
-            const SizedBox(width: 8),
-            IconButton.filledTonal(
-              tooltip: 'Галерея',
-              onPressed: _pickGallery,
-              icon: const Icon(Icons.photo_library_outlined),
-            ),
-            IconButton.filledTonal(
-              tooltip: 'Видео',
-              onPressed: _pickVideo,
-              icon: const Icon(Icons.videocam_outlined),
-            ),
-          ],
-        ),
-        const SizedBox(height: 20),
-        Center(
-          child: Column(
-            children: [
-              GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTapDown: (_) => _startVoice(),
-                onTapUp: (_) => _stopVoice(),
-                onTapCancel: _stopVoice,
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 160),
-                  width: 92,
-                  height: 92,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: _recording ? scheme.error : scheme.primary,
-                    boxShadow: [
-                      BoxShadow(
-                        color: (_recording ? scheme.error : scheme.primary).withValues(alpha: 0.35),
-                        blurRadius: _recording ? 18 : 8,
-                      ),
-                    ],
-                  ),
-                  child: Icon(_recording ? Icons.stop : Icons.mic, color: scheme.onPrimary, size: 40),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _recording ? 'Говорите · ${_recordLabel()}' : 'Зажмите и говорите',
-                style: TextStyle(color: scheme.onSurfaceVariant),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 16),
-        TextField(
-          controller: _notesCtrl,
-          minLines: 2,
-          maxLines: 5,
-          onChanged: (_) => unawaited(_persistDraft()),
-          decoration: const InputDecoration(
-            labelText: 'Комментарий текстом',
-            hintText: 'Можно написать, если не хочется диктовать',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        const SizedBox(height: 20),
-        Text('Снято', style: Theme.of(context).textTheme.titleMedium),
+        Text('Снято (${_items.length})', style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 8),
         if (_items.isEmpty)
           Text('Пока пусто — снимайте, не дожидаясь загрузки.', style: TextStyle(color: scheme.onSurfaceVariant))
@@ -627,10 +554,141 @@ class _CaptureScreenState extends State<CaptureScreen> {
     );
   }
 
+  Widget _buildCaptureToolbar(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      elevation: 8,
+      color: scheme.surface,
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+          child: Row(
+            children: [
+              IconButton.filledTonal(
+                tooltip: _torchOn ? 'Выключить фонарик' : 'Фонарик',
+                onPressed: _recording ? null : _toggleTorch,
+                icon: Icon(_torchOn ? Icons.flashlight_on : Icons.flashlight_off_outlined),
+                color: _torchOn ? Colors.amber.shade800 : null,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: _recording ? null : _openCamera,
+                  icon: const Icon(Icons.photo_camera),
+                  label: const Text('Камера'),
+                  style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
+                ),
+              ),
+              const SizedBox(width: 12),
+              VoiceRecordButton(
+                recording: _recording,
+                maxDuration: _maxVoice,
+                onStart: _startVoice,
+                onStop: _stopVoice,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPrimaryAction({required bool isDraft}) {
+    final keyboardOpen = MediaQuery.viewInsetsOf(context).bottom > 0;
+    if (keyboardOpen) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      child: FilledButton.icon(
+        onPressed: _finishing ? null : isDraft ? _sendToMp : _prepareDraft,
+        icon: Icon(isDraft ? Icons.send : Icons.check),
+        label: Text(
+          _finishing
+              ? 'Секунду…'
+              : isDraft
+                  ? 'Отправить МП'
+                  : 'Готово',
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final draft = _draft;
+    return PopScope(
+      canPop: true,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) unawaited(_persistDraft());
+      },
+      child: Scaffold(
+        resizeToAvoidBottomInset: true,
+        appBar: AppBar(
+          title: Text(widget.title),
+          actions: [
+            TextButton(
+              onPressed: _discardDraft,
+              child: const Text('Сбросить'),
+            ),
+          ],
+        ),
+        body: Column(
+          children: [
+            Expanded(
+              child: draft != null ? _buildDraft(context, draft) : _buildCapture(context),
+            ),
+            _buildPrimaryAction(isDraft: draft != null),
+            if (draft == null) _buildCaptureToolbar(context),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCapture(BuildContext context) {
+    final order = widget.order;
+    final scheme = Theme.of(context).colorScheme;
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+      children: [
+        Text(
+          order.regNumber ?? order.saleNumber,
+          style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+        ),
+        if (order.carInfo.isNotEmpty)
+          Text(order.carInfo, style: TextStyle(color: scheme.onSurfaceVariant)),
+        const SizedBox(height: 12),
+        if (_error != null)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Text(_error!, style: TextStyle(color: scheme.error)),
+          ),
+        _buildShotsGrid(context),
+        const SizedBox(height: 16),
+        TextField(
+          controller: _notesCtrl,
+          minLines: 2,
+          maxLines: 5,
+          onChanged: (_) => unawaited(_persistDraft()),
+          decoration: const InputDecoration(
+            labelText: 'Комментарий текстом',
+            hintText: 'Можно написать, если не хочется диктовать',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Голос — до 30 с за раз, можно несколько записей. Камера: фото, видео и галерея в одном экране.',
+          style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12, height: 1.35),
+        ),
+      ],
+    );
+  }
+
   Widget _buildDraft(BuildContext context, _DraftResult draft) {
     final scheme = Theme.of(context).colorScheme;
     return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
       children: [
         Text('Проверьте перед отправкой МП', style: Theme.of(context).textTheme.titleMedium),
         const SizedBox(height: 8),
@@ -681,29 +739,13 @@ class _CaptureScreenState extends State<CaptureScreen> {
                 ),
               ),
             ),
-        if (_photoCarousel.isNotEmpty) ...[
-          const SizedBox(height: 8),
-          Text('Фото', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
-          SizedBox(
-            height: 88,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              itemCount: _photoCarousel.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 8),
-              itemBuilder: (context, i) {
-                final p = _photoCarousel[i];
-                return GestureDetector(
-                  onTap: () => openMediaCarousel(context, items: _photoCarousel, initialIndex: i),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(8),
-                    child: p.filePath != null && File(p.filePath!).existsSync()
-                        ? Image.file(File(p.filePath!), width: 88, height: 88, fit: BoxFit.cover)
-                        : const SizedBox(width: 88, height: 88, child: Icon(Icons.image)),
-                  ),
-                );
-              },
-            ),
+        const SizedBox(height: 8),
+        _buildShotsGrid(context),
+        if (_items.any((e) => e.messageType == 'voice')) ...[
+          const SizedBox(height: 6),
+          Text(
+            'Удалённый голос не попадёт в отчёт, но его текст мог остаться в расшифровке выше — поправьте её.',
+            style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12, height: 1.35),
           ),
         ],
       ],

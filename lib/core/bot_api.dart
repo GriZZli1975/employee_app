@@ -34,6 +34,19 @@ class BotApi {
     };
   }
 
+  Future<String> baseUrl() => _base();
+
+  Future<Map<String, String>> mediaAuthHeaders() async {
+    final host = await session.getBaseUrl();
+    final pcKey = await session.getPcKey() ?? '';
+    final apiKey = await session.getApiKey();
+    return {
+      'X-Stoox-Host': host,
+      'X-Pc-Key': pcKey,
+      'X-Stoox-Key': apiKey,
+    };
+  }
+
   Future<String> _base() async {
     final url = EmployeeSession.normalizeBotUrl(await session.getBotUrl());
     if (url.isEmpty) {
@@ -46,6 +59,29 @@ class BotApi {
     final res = await http
         .get(Uri.parse('${await _base()}/api/employee/me'), headers: await _headers())
         .timeout(const Duration(seconds: 20));
+    return _decode(res);
+  }
+
+  /// Первый вход: только URL бота + PC-ключ. Хост и ключ компании отдаёт бот после проверки.
+  Future<Map<String, dynamic>> bootstrap({
+    required String botBaseUrl,
+    required String pcKey,
+  }) async {
+    final base = EmployeeSession.normalizeBotUrl(botBaseUrl);
+    if (base.isEmpty) {
+      throw BotApiException(0, 'Не задан URL сервиса бота');
+    }
+    final key = pcKey.trim();
+    if (key.isEmpty) {
+      throw BotApiException(0, 'Укажите PC-ключ сотрудника');
+    }
+    final res = await http
+        .post(
+          Uri.parse('$base/api/employee/bootstrap'),
+          headers: {'Content-Type': 'application/json', 'Accept': 'application/json'},
+          body: jsonEncode({'pc_key': key}),
+        )
+        .timeout(const Duration(seconds: 25));
     return _decode(res);
   }
 
@@ -93,10 +129,12 @@ class BotApi {
     String? notes,
     String? transcript,
     List<String>? workItems,
+    List<String>? mediaIds,
     bool notifyMp = true,
   }) async {
     final body = <String, dynamic>{
       'session_id': sessionId,
+      'media_ids': ?mediaIds,
       'kind': kind,
       'notify_mp': notifyMp,
       'employee_id': ?employeeId,
@@ -128,14 +166,14 @@ class BotApi {
     String? employeeName,
     String? conversationId,
     Map<String, dynamic>? context,
-    String? searchMode,
+    String? templateId,
   }) async {
     final body = <String, dynamic>{
       'employee_id': employeeId,
       'message': message,
       if (employeeName != null && employeeName.isNotEmpty) 'employee_name': employeeName,
       if (conversationId != null && conversationId.isNotEmpty) 'conversation_id': conversationId,
-      if (searchMode != null && searchMode.isNotEmpty) 'search_mode': searchMode,
+      if (templateId != null && templateId.isNotEmpty) 'template_id': templateId,
       'context': ?context,
     };
     final res = await http
@@ -146,6 +184,69 @@ class BotApi {
         )
         .timeout(const Duration(seconds: 120));
     return _decode(res);
+  }
+
+  /// Сохранённые осмотры/диагностики по машине (новые сверху).
+  Future<List<Map<String, dynamic>>> fetchInspectionHistory({
+    int? carId,
+    String? plate,
+    int? clientId,
+    int limit = 50,
+  }) async {
+    final query = <String, String>{
+      if (carId != null) 'car_id': '$carId',
+      if (plate != null && plate.trim().isNotEmpty) 'plate': plate.trim(),
+      if (clientId != null) 'client_id': '$clientId',
+      'limit': '$limit',
+    };
+    final uri = Uri.parse('${await _base()}/api/inspection/history').replace(queryParameters: query);
+    final res = await http.get(uri, headers: await _headers()).timeout(const Duration(seconds: 30));
+    final data = _decode(res);
+    final raw = data['items'];
+    if (raw is! List) return const [];
+    return raw.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+  }
+
+  Future<Map<String, dynamic>> fetchInspectionDetail(String reportId) async {
+    final res = await http
+        .get(
+          Uri.parse('${await _base()}/api/inspection/history/${Uri.encodeComponent(reportId)}'),
+          headers: await _headers(),
+        )
+        .timeout(const Duration(seconds: 30));
+    final data = _decode(res);
+    final item = data['item'];
+    return item is Map ? Map<String, dynamic>.from(item) : <String, dynamic>{};
+  }
+
+  Future<List<Map<String, dynamic>>> fetchTemplates({int? carId}) async {
+    final query = carId != null ? '?car_id=$carId' : '';
+    final res = await http
+        .get(
+          Uri.parse('${await _base()}/api/ai/templates$query'),
+          headers: await _headers(),
+        )
+        .timeout(const Duration(seconds: 20));
+    final data = _decode(res);
+    final raw = data['templates'];
+    if (raw is! List) return const [];
+    return raw.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+  }
+
+  Future<String> transcribeFile(File file, {String filename = 'voice.wav'}) async {
+    final bytes = await file.readAsBytes();
+    final res = await http
+        .post(
+          Uri.parse('${await _base()}/api/ai/transcribe'),
+          headers: await _headers(),
+          body: jsonEncode({
+            'file_base64': base64Encode(bytes),
+            'filename': filename,
+          }),
+        )
+        .timeout(const Duration(seconds: 120));
+    final data = _decode(res);
+    return (data['transcript'] ?? '').toString().trim();
   }
 
   Map<String, dynamic> _decode(http.Response res) {

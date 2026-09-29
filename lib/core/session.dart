@@ -213,16 +213,19 @@ class EmployeeSession {
     await _storage.write(key: _themeKey, value: dark ? '1' : '0').timeout(_timeout);
   }
 
-  String _draftKey(String kind, int? carId, String? plate) =>
-      '$_draftPrefix${kind}_${carId ?? plate ?? 'none'}';
+  /// Черновик живёт в рамках заказ-наряда: та же машина с новым ЗН — чистый осмотр.
+  String _draftKey(String kind, int? saleId, int? carId, String? plate) => saleId != null
+      ? '$_draftPrefix${kind}_sale$saleId'
+      : '$_draftPrefix${kind}_${carId ?? plate ?? 'none'}';
 
   Future<Map<String, dynamic>?> loadCaptureDraft({
     required String kind,
+    int? saleId,
     int? carId,
     String? plate,
   }) async {
     try {
-      final raw = await _storage.read(key: _draftKey(kind, carId, plate)).timeout(_timeout);
+      final raw = await _storage.read(key: _draftKey(kind, saleId, carId, plate)).timeout(_timeout);
       if (raw == null || raw.isEmpty) return null;
       final data = jsonDecode(raw);
       if (data is Map<String, dynamic>) return data;
@@ -233,22 +236,28 @@ class EmployeeSession {
 
   Future<void> saveCaptureDraft({
     required String kind,
+    int? saleId,
     int? carId,
     String? plate,
     required Map<String, dynamic> draft,
   }) async {
     await _storage
-        .write(key: _draftKey(kind, carId, plate), value: jsonEncode(draft))
+        .write(key: _draftKey(kind, saleId, carId, plate), value: jsonEncode(draft))
         .timeout(_timeout);
   }
 
   Future<void> clearCaptureDraft({
     required String kind,
+    int? saleId,
     int? carId,
     String? plate,
   }) async {
     try {
-      await _storage.delete(key: _draftKey(kind, carId, plate)).timeout(_timeout);
+      await _storage.delete(key: _draftKey(kind, saleId, carId, plate)).timeout(_timeout);
+      // Черновик старого формата (по машине) — чтобы не всплыл, если ЗН потеряется
+      if (saleId != null) {
+        await _storage.delete(key: _draftKey(kind, null, carId, plate)).timeout(_timeout);
+      }
     } catch (_) {}
   }
 

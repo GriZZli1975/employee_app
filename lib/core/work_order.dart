@@ -24,6 +24,170 @@ class StooxWorkOrder {
   int? get carId => _int(raw['car_id'] ?? raw['carId']);
   int? get saleId => _int(raw['sale_id'] ?? raw['id'] ?? raw['saleId']);
 
+  /// Открытый ЗН: `closed` = 0 / false / нет поля. Закрытый — не в «В работе».
+  bool get isOpen {
+    final c = raw['closed'];
+    if (c == null) return true;
+    if (c == false || c == 0 || c == '0') return true;
+    if (c is num) return c == 0;
+    final s = c.toString().trim().toLowerCase();
+    return s.isEmpty || s == 'false' || s == '0';
+  }
+
+  /// Причина обращения / заметка ЗН из Stoox (`sh_reason`, `sh_note`).
+  String? get shReason => _cleanNote(raw['sh_reason'] ?? raw['reason']);
+  String? get shNote => _cleanNote(raw['sh_note'] ?? raw['note']);
+  bool get hasClientNotes {
+    final r = shReason;
+    final n = shNote;
+    return (r != null && r.isNotEmpty) || (n != null && n.isNotEmpty);
+  }
+
+  /// Актуальная запись на ремонт: с максимальным `date_end`.
+  StooxPlanningSlot? get latestPlanning {
+    final slots = planningSlots;
+    if (slots.isEmpty) return null;
+    slots.sort((a, b) {
+      final ae = a.end ?? a.start;
+      final be = b.end ?? b.start;
+      if (ae == null && be == null) return 0;
+      if (ae == null) return 1;
+      if (be == null) return -1;
+      return be.compareTo(ae);
+    });
+    return slots.first;
+  }
+
+  List<StooxPlanningSlot> get planningSlots {
+    final rawList = raw['records'];
+    final list = <dynamic>[];
+    if (rawList is List) {
+      list.addAll(rawList);
+    } else if (rawList is Map) {
+      list.addAll(rawList.values);
+    }
+    final out = <StooxPlanningSlot>[];
+    for (final item in list) {
+      if (item is! Map) continue;
+      final slot = StooxPlanningSlot.fromMap(Map<String, dynamic>.from(item));
+      if (slot.start != null || slot.end != null) out.add(slot);
+    }
+    return out;
+  }
+
+  DateTime? get planningEnd => latestPlanning?.end ?? latestPlanning?.start;
+
+  /// Плановое время вышло — авто «зависло» относительно записи.
+  bool get isPlanningOverdue {
+    final end = planningEnd;
+    if (end == null) return false;
+    return end.isBefore(DateTime.now());
+  }
+
+  String? get planningRangeLabel => latestPlanning?.rangeLabel;
+
+  /// Только время актуальной записи (дата — в заголовке линейки).
+  String? get planningTimeLabel => latestPlanning?.timeLabel;
+
+  /// День для группировки линейки (по date_end актуальной записи).
+  DateTime? get planningDay {
+    final end = planningEnd ?? latestPlanning?.start;
+    if (end == null) return null;
+    return DateTime(end.year, end.month, end.day);
+  }
+
+  /// Сортировка «В работе»: сначала недоделанные (просрочка сверху), затем «мои всё сделано».
+  static int compareByPlanningPriority(
+    StooxWorkOrder a,
+    StooxWorkOrder b, {
+    String? employeeId,
+  }) {
+    if (employeeId != null) {
+      final aDone = a.allMyWorksDoneFor(employeeId);
+      final bDone = b.allMyWorksDoneFor(employeeId);
+      if (aDone != bDone) return aDone ? 1 : -1;
+    }
+    final now = DateTime.now();
+    final aEnd = a.planningEnd;
+    final bEnd = b.planningEnd;
+    final aOver = aEnd != null && aEnd.isBefore(now);
+    final bOver = bEnd != null && bEnd.isBefore(now);
+    if (aOver != bOver) return aOver ? -1 : 1;
+    if (aEnd == null && bEnd == null) return 0;
+    if (aEnd == null) return 1;
+    if (bEnd == null) return -1;
+    if (aOver && bOver) return aEnd.compareTo(bEnd);
+    return aEnd.compareTo(bEnd);
+  }
+
+  static List<dynamic> sortOpenBaskets(List<dynamic> items, {String? employeeId}) {
+    final mapped = items
+        .whereType<Map>()
+        .map((e) => MapEntry(e, StooxWorkOrder(Map<String, dynamic>.from(e))))
+        .toList();
+    mapped.sort((a, b) => compareByPlanningPriority(a.value, b.value, employeeId: employeeId));
+    return [
+      for (final e in mapped) e.key,
+      ...items.where((e) => e is! Map),
+    ];
+  }
+
+  /// Группы для вертикальной линейки: день → авто (уже отсортированные).
+  static List<({DateTime? day, List<StooxWorkOrder> orders})> groupByPlanningDay(
+    List<dynamic> items, {
+    String? employeeId,
+    bool unfinishedOnly = false,
+  }) {
+    var sorted = sortOpenBaskets(items, employeeId: employeeId)
+        .whereType<Map>()
+        .map((e) => StooxWorkOrder(Map<String, dynamic>.from(e)))
+        .toList();
+    if (unfinishedOnly && employeeId != null) {
+      sorted = sorted.where((o) => o.hasUnfinishedMyWorks(employeeId)).toList();
+    }
+    final groups = <DateTime?, List<StooxWorkOrder>>{};
+    final orderKeys = <DateTime?>[];
+    for (final o in sorted) {
+      final day = o.planningDay;
+      if (!groups.containsKey(day)) {
+        groups[day] = [];
+        orderKeys.add(day);
+      }
+      groups[day]!.add(o);
+    }
+    return [
+      for (final day in orderKeys) (day: day, orders: groups[day]!),
+    ];
+  }
+
+  StooxWorkOrder withWorks(List<StooxLineItem> works) {
+    final map = Map<String, dynamic>.from(raw);
+    map['works'] = works.map((w) => Map<String, dynamic>.from(w.raw)).toList();
+    return StooxWorkOrder(map);
+  }
+
+  static String? _cleanNote(dynamic value) {
+    if (value == null) return null;
+    var s = value.toString().trim();
+    if (s.isEmpty || s == '-' || s == 'null') return null;
+    // Убрать пустые сегменты вида "; -; -" и лишние кавычки.
+    final parts = <String>[];
+    for (final rawPart in s.split(';')) {
+      var p = rawPart.trim();
+      while (p.startsWith("'") || p.startsWith('"')) {
+        p = p.substring(1);
+      }
+      while (p.endsWith("'") || p.endsWith('"')) {
+        p = p.substring(0, p.length - 1);
+      }
+      p = p.trim();
+      if (p.isEmpty || p == '-') continue;
+      parts.add(p);
+    }
+    s = parts.join('\n').trim();
+    return s.isEmpty ? null : s;
+  }
+
   num? get totalSum {
     final v = raw['sum'] ?? raw['appraisal'];
     if (v is num) return v;
@@ -52,6 +216,60 @@ class StooxWorkOrder {
   List<StooxLineItem> get works => _firstLines(_worksKeys);
   List<StooxLineItem> get parts => _firstLines(_partsKeys);
   List<StooxLineItem> get cleaning => _firstLines(_cleaningKeys);
+
+  /// Работы, назначенные на сотрудника (`works[].employees[].employee_id`).
+  /// [fallbackAllIfUnassigned]: если ни у одной работы нет assignees (урезанный
+  /// формат sales) — вернуть все работы, иначе пустой список чужих.
+  List<StooxLineItem> worksForEmployee(
+    String? employeeId, {
+    bool fallbackAllIfUnassigned = false,
+  }) {
+    if (employeeId == null || employeeId.trim().isEmpty) return works;
+    final id = employeeId.trim();
+    final mine = works.where((w) => w.isAssignedTo(id)).toList();
+    if (mine.isNotEmpty) return mine;
+    if (fallbackAllIfUnassigned && !hasWorkEmployeeAssignments) return works;
+    return mine;
+  }
+
+  /// Хотя бы у одной работы есть назначение исполнителей.
+  bool get hasWorkEmployeeAssignments =>
+      works.any((w) => w.assignedEmployeeIds.isNotEmpty);
+
+  /// Сумма строк работ (lineTotal). Null если ни у одной нет цены.
+  static num? sumLineTotals(Iterable<StooxLineItem> items) {
+    num sum = 0;
+    var any = false;
+    for (final w in items) {
+      final t = w.lineTotal;
+      if (t == null) continue;
+      sum += t;
+      any = true;
+    }
+    return any ? sum : null;
+  }
+
+  num? myWorksSumFor(String? employeeId, {bool fallbackAllIfUnassigned = false}) =>
+      sumLineTotals(worksForEmployee(employeeId, fallbackAllIfUnassigned: fallbackAllIfUnassigned));
+
+  /// Есть незакрытые (`to_workshop=0`) работы текущего сотрудника.
+  bool hasUnfinishedMyWorks(String? employeeId) {
+    final mine = worksForEmployee(employeeId);
+    if (mine.isEmpty) return false;
+    return mine.any((w) => !w.toWorkshop);
+  }
+
+  /// Все свои работы отмечены сделанными. Без назначенных на сотрудника — false.
+  bool allMyWorksDoneFor(String? employeeId) {
+    final mine = worksForEmployee(employeeId);
+    if (mine.isEmpty) return false;
+    return mine.every((w) => w.toWorkshop);
+  }
+
+  int myWorksDoneCount(String? employeeId) =>
+      worksForEmployee(employeeId).where((w) => w.toWorkshop).length;
+
+  int myWorksTotalCount(String? employeeId) => worksForEmployee(employeeId).length;
 
   String get carInfo {
     final bits = [
@@ -169,6 +387,10 @@ class StooxWorkOrder {
       for (final entry in value.entries) {
         if (entry.value is! Map) continue;
         final map = Map<String, dynamic>.from(entry.value as Map);
+        // Ключ хеша MCP — это basket_work_id; внутренний id часто work_id из каталога.
+        if (int.tryParse(entry.key.toString()) != null) {
+          map['basket_work_id'] = map['basket_work_id'] ?? entry.key;
+        }
         map.putIfAbsent('id', () => entry.key);
         catalog.add(StooxLineItem(map));
         if (int.tryParse(entry.key.toString()) != null) numericKeys += 1;
@@ -193,6 +415,90 @@ class StooxWorkOrder {
     if (value is num) return value;
     return num.tryParse(value.toString().replaceAll(' ', '').replaceAll(',', '.'));
   }
+}
+
+class StooxPlanningSlot {
+  StooxPlanningSlot({this.start, this.end, this.boxId});
+
+  final DateTime? start;
+  final DateTime? end;
+  final int? boxId;
+
+  factory StooxPlanningSlot.fromMap(Map<String, dynamic> map) {
+    return StooxPlanningSlot(
+      start: parseStooxDateTime(map['date_start'] ?? map['record_start']),
+      end: parseStooxDateTime(map['date_end'] ?? map['record_end']),
+      boxId: StooxWorkOrder._int(map['box_id']),
+    );
+  }
+
+  bool get isOverdue {
+    final e = end ?? start;
+    if (e == null) return false;
+    return e.isBefore(DateTime.now());
+  }
+
+  String get rangeLabel {
+    final s = start;
+    final e = end;
+    if (s == null && e == null) return '';
+    if (s != null && e != null) {
+      return '${_fmtDateTime(s)} – ${_fmtDateTime(e)}';
+    }
+    if (s != null) return 'с ${_fmtDateTime(s)}';
+    return 'до ${_fmtDateTime(e!)}';
+  }
+
+  /// Только часы:минуты для строки авто в линейке.
+  String get timeLabel {
+    final s = start;
+    final e = end;
+    if (s == null && e == null) return '';
+    if (s != null && e != null) {
+      if (_sameDay(s, e)) return '${_fmtTime(s)} – ${_fmtTime(e)}';
+      return '${_fmtDateTime(s)} – ${_fmtDateTime(e)}';
+    }
+    if (s != null) return _fmtTime(s);
+    return _fmtTime(e!);
+  }
+
+  static bool _sameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  static String _fmtTime(DateTime d) {
+    final hh = d.hour.toString().padLeft(2, '0');
+    final mi = d.minute.toString().padLeft(2, '0');
+    return '$hh:$mi';
+  }
+
+  static String _fmtDateTime(DateTime d) {
+    final dd = d.day.toString().padLeft(2, '0');
+    final mm = d.month.toString().padLeft(2, '0');
+    return '$dd.$mm ${_fmtTime(d)}';
+  }
+}
+
+/// Парсер дат Stoox: `22.09.2026 11:30:00` или ISO.
+DateTime? parseStooxDateTime(dynamic value) {
+  if (value == null) return null;
+  if (value is DateTime) return value;
+  final s = value.toString().trim();
+  if (s.isEmpty) return null;
+  final ru = RegExp(
+    r'^(\d{1,2})\.(\d{1,2})\.(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$',
+  );
+  final m = ru.firstMatch(s);
+  if (m != null) {
+    return DateTime(
+      int.parse(m.group(3)!),
+      int.parse(m.group(2)!),
+      int.parse(m.group(1)!),
+      int.parse(m.group(4) ?? '0'),
+      int.parse(m.group(5) ?? '0'),
+      int.parse(m.group(6) ?? '0'),
+    );
+  }
+  return DateTime.tryParse(s.replaceFirst(' ', 'T'));
 }
 
 class StooxLineItem {
@@ -240,6 +546,32 @@ class StooxLineItem {
     if (v is int) return v > 0 ? v : null;
     final n = int.tryParse(v?.toString() ?? '');
     return n != null && n > 0 ? n : null;
+  }
+
+  /// Назначенные исполнители работы (`employees[].employee_id`).
+  List<String> get assignedEmployeeIds {
+    final rawList = raw['employees'];
+    final list = <dynamic>[];
+    if (rawList is List) {
+      list.addAll(rawList);
+    } else if (rawList is Map) {
+      list.addAll(rawList.values);
+    }
+    final ids = <String>[];
+    for (final item in list) {
+      if (item is! Map) continue;
+      final id = item['employee_id'] ?? item['employeeId'] ?? item['id'];
+      if (id == null) continue;
+      final s = id.toString().trim();
+      if (s.isNotEmpty) ids.add(s);
+    }
+    return ids;
+  }
+
+  bool isAssignedTo(String employeeId) {
+    final id = employeeId.trim();
+    if (id.isEmpty) return false;
+    return assignedEmployeeIds.any((e) => e == id);
   }
 
   bool get toWorkshop {

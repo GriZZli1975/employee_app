@@ -21,7 +21,8 @@ class VoiceRecorder {
     await r.start(
       const RecordConfig(
         encoder: AudioEncoder.wav,
-        sampleRate: 48000,
+        // 16 kHz — укладывается в Yandex SpeechKit sync (~1 МБ на 30 с)
+        sampleRate: 16000,
         numChannels: 1,
       ),
       path: _path!,

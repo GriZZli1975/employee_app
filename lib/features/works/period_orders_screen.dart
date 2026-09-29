@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../core/session.dart';
 import '../../core/work_order.dart';
 import 'work_order_screen.dart';
 
@@ -10,11 +11,17 @@ class PeriodOrdersScreen extends StatelessWidget {
     required this.title,
     required this.orders,
     this.emptyText = 'За выбранный период записей нет',
+    this.session,
+    this.employeeId,
+    this.defaultMineFilter = true,
   });
 
   final String title;
   final List<StooxWorkOrder> orders;
   final String emptyText;
+  final EmployeeSession? session;
+  final String? employeeId;
+  final bool defaultMineFilter;
 
   @override
   Widget build(BuildContext context) {
@@ -33,15 +40,24 @@ class PeriodOrdersScreen extends StatelessWidget {
               separatorBuilder: (_, __) => const SizedBox(height: 8),
               itemBuilder: (context, index) {
                 final order = orders[index];
+                final mySum = employeeId == null
+                    ? null
+                    : order.myWorksSumFor(
+                        employeeId,
+                        fallbackAllIfUnassigned: !order.hasWorkEmployeeAssignments,
+                      );
                 return Card(
                   child: ListTile(
                     title: Text(order.saleNumber, style: const TextStyle(fontWeight: FontWeight.w600)),
                     subtitle: Text(
                       [
-                        if (order.regNumber != null) order.regNumber,
-                        if (order.createdAt != null) order.createdAt,
-                        if (order.totalSum != null) StooxFormat.money(order.totalSum!),
-                      ].whereType<String>().join(' · '),
+                        if (order.regNumber != null) order.regNumber!,
+                        if (order.createdAt != null) order.createdAt!,
+                        if (mySum != null)
+                          'мои ${StooxFormat.money(mySum)}'
+                        else if (order.totalSum != null)
+                          StooxFormat.money(order.totalSum!),
+                      ].join(' · '),
                     ),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: () {
@@ -49,7 +65,10 @@ class PeriodOrdersScreen extends StatelessWidget {
                         MaterialPageRoute<void>(
                           builder: (_) => WorkOrderScreen(
                             order: order,
+                            session: session,
+                            employeeId: employeeId,
                             sectionTitle: title,
+                            defaultMineFilter: defaultMineFilter,
                           ),
                         ),
                       );

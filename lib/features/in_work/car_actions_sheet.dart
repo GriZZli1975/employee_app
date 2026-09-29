@@ -5,6 +5,7 @@ import '../../core/stoox_api.dart';
 import '../../core/work_order.dart';
 import '../ai/ai_chat_screen.dart';
 import '../capture/capture_screen.dart';
+import '../history/inspection_history_screen.dart';
 import '../works/work_order_screen.dart';
 
 Future<void> showCarActions({
@@ -15,6 +16,7 @@ Future<void> showCarActions({
   Map<String, dynamic>? employeeSummary,
   List<dynamic> sales = const [],
   List<dynamic> warranty = const [],
+  ValueChanged<StooxWorkOrder>? onOrderUpdated,
 }) {
   return showModalBottomSheet<void>(
     context: context,
@@ -46,6 +48,17 @@ Future<void> showCarActions({
                 ),
               ),
             const SizedBox(height: 16),
+            if (order.hasClientNotes) ...[
+              FilledButton.tonalIcon(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _showClientNotes(context, order);
+                },
+                icon: const Icon(Icons.sticky_note_2_outlined),
+                label: const Text('Причина / заметка'),
+              ),
+              const SizedBox(height: 10),
+            ],
             FilledButton.icon(
               onPressed: () async {
                 Navigator.pop(ctx);
@@ -70,15 +83,20 @@ Future<void> showCarActions({
                   }
                 }
                 if (!context.mounted) return;
-                await Navigator.of(context).push(
-                  MaterialPageRoute<void>(
+                final updated = await Navigator.of(context).push<StooxWorkOrder>(
+                  MaterialPageRoute<StooxWorkOrder>(
                     builder: (_) => WorkOrderScreen(
                       order: resolved,
                       session: session,
+                      employeeId: employeeSummary == null
+                          ? null
+                          : StooxWorkOrder.employeeIdFromSummary(employeeSummary),
                       allowMarkDone: true,
+                      defaultMineFilter: true,
                     ),
                   ),
                 );
+                if (updated != null) onOrderUpdated?.call(updated);
               },
               icon: const Icon(Icons.list_alt),
               label: Text(
@@ -137,6 +155,19 @@ Future<void> showCarActions({
                 Navigator.pop(ctx);
                 Navigator.of(context).push(
                   MaterialPageRoute<void>(
+                    builder: (_) => InspectionHistoryScreen(session: session, order: order),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.history),
+              label: const Text('История осмотров'),
+            ),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: () {
+                Navigator.pop(ctx);
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
                     builder: (_) => AiChatScreen(
                       session: session,
                       order: order,
@@ -166,6 +197,52 @@ bool _hasPlate(StooxWorkOrder order, BuildContext context) {
     const SnackBar(content: Text('У авто нет госномера')),
   );
   return false;
+}
+
+Future<void> _showClientNotes(BuildContext context, StooxWorkOrder order) {
+  final reason = order.shReason;
+  final note = order.shNote;
+  return showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    isScrollControlled: true,
+    builder: (ctx) {
+      final bottom = MediaQuery.paddingOf(ctx).bottom;
+      return Padding(
+        padding: EdgeInsets.fromLTRB(20, 8, 20, 16 + bottom),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Причина и заметка',
+                style: Theme.of(ctx).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                order.regNumber ?? order.saleNumber,
+                style: const TextStyle(color: Colors.black54),
+              ),
+              if (reason != null && reason.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                Text('Причина (со слов клиента)', style: Theme.of(ctx).textTheme.titleSmall),
+                const SizedBox(height: 6),
+                Text(reason, style: const TextStyle(height: 1.4)),
+              ],
+              if (note != null && note.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                Text('Заметка', style: Theme.of(ctx).textTheme.titleSmall),
+                const SizedBox(height: 6),
+                Text(note, style: const TextStyle(height: 1.4)),
+              ],
+              const SizedBox(height: 12),
+            ],
+          ),
+        ),
+      );
+    },
+  );
 }
 
 int? _employeeId(Map<String, dynamic>? summary) {
